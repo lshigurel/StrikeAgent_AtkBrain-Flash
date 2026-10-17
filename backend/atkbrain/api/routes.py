@@ -92,6 +92,9 @@ async def _load_reportable_finding(pid: str, fid: str) -> tuple[dict, dict | Non
 
 router = APIRouter(prefix="/api")
 router.include_router(mcp_router)
+from ..mcp_client.api import make_router as make_external_mcp_router
+from ..mcp_client.runtime import store as external_mcp_store, transport as external_mcp_transport
+router.include_router(make_external_mcp_router(external_mcp_store, external_mcp_transport))
 
 
 def _require_llm_key() -> None:
