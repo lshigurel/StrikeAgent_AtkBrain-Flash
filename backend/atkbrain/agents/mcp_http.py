@@ -9,10 +9,12 @@ from fastapi.responses import JSONResponse, Response
 
 from .context import AgentContext
 from .tools import mcp_tool_defs, mcp_tool_map
+from ..mcp_client import runtime as external_mcp
+from ..mcp_client.agent_tools import NAMES, external_tool_defs, dispatch_external
 
 
 async def _merged_defs(pid: str) -> list[dict]:
-    return list(_DEFS.get(pid) or [])
+    return list(_DEFS.get(pid) or []) + external_tool_defs()
 
 router = APIRouter()
 
@@ -28,6 +30,7 @@ def register_project_mcp(ctx: AgentContext) -> None:
     _CTX[pid] = ctx
     _TOOLS[pid] = fns
     _DEFS[pid] = mcp_tool_defs(ctx)
+    external_mcp.bridge.resume_project(pid)
 
 
 def unregister_project_mcp(pid: str) -> None:
@@ -47,7 +50,7 @@ def _rpc_error(rid: Any, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": message}}
 
 
-async def _dispatch(pid: str, body: dict) -> dict | None:
+async def _dispatch(pid: str, body: dict, role: str = "") -> dict | None:
     method = body.get("method")
     rid = body.get("id")
     params = body.get("params") if isinstance(body.get("params"), dict) else {}
@@ -71,6 +74,9 @@ async def _dispatch(pid: str, body: dict) -> dict | None:
     if method == "tools/call":
         name = str(params.get("name") or "")
         args = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+        if name in NAMES:
+            out = await dispatch_external(_CTX[pid], role, name, args, external_mcp.bridge)
+            return _rpc_result(rid, {"content": out["content"], "isError": out["is_error"]})
         fns = _TOOLS.get(pid) or {}
         fn = fns.get(name)
         if fn is None:
@@ -117,7 +123,7 @@ async def mcp_endpoint(pid: str, request: Request, path: str = ""):
     for msg in messages:
         if not isinstance(msg, dict):
             continue
-        reply = await _dispatch(pid, msg)
+        reply = await _dispatch(pid, msg, (request.headers.get("x-atkbrain-role") or "").strip().lower())
         if reply is None:
             continue
         result = reply.get("result") if isinstance(reply.get("result"), dict) else None
@@ -141,6 +147,15 @@ async def list_agent_tools(pid: str):
 async def call_agent_tool(pid: str, name: str, request: Request):
     if pid not in _CTX:
         return JSONResponse({"detail": "project tools not registered"}, status_code=404)
+    if name in NAMES:
+        try:
+            args = await request.json()
+        except Exception:
+            args = {}
+        out = await dispatch_external(_CTX[pid], (request.headers.get("x-atkbrain-role") or "").strip().lower(),
+                                      name, args if isinstance(args, dict) else {}, external_mcp.bridge)
+        return {"text": "\n".join(c.get("text", "") for c in out["content"]),
+                "is_error": out["is_error"], "code": out.get("code")}
     try:
         from ..engine.scheduler import manager as _mgr
         if not _mgr.is_running(pid) and not _mgr.is_queued(pid):

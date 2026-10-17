@@ -161,6 +161,8 @@ async def lifespan(app: FastAPI):
         await _run_manager.checkpoint_for_shutdown(timeout=8.0)
     except Exception as e:
         print(f"[shutdown] 记录续跑清单失败：{e}")
+    from .mcp_client.runtime import bridge as mcp_bridge
+    await mcp_bridge.close()
     await db.close()
 
 
