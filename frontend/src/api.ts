@@ -57,6 +57,44 @@ export type LlmTestResult = {
   error?: string;
 };
 
+export type AgentTrack = "redteam" | "flag" | "src";
+
+export type BuiltinAgent = {
+  id: string;
+  tracks: AgentTrack[];
+  core: AgentTrack[];
+  enabled: boolean;
+  default: boolean;
+  model: string;
+  descriptions: Partial<Record<AgentTrack, string>>;
+};
+
+export type CustomAgent = {
+  id: string;
+  description: string;
+  prompt: string;
+  tracks: AgentTrack[];
+  enabled: boolean;
+  default: boolean;
+  model: string;
+};
+
+export type AgentsSnapshot = {
+  builtin: BuiltinAgent[];
+  custom: CustomAgent[];
+  limits: { per_project: number; max_live: number };
+};
+
+export type AgentDraft = {
+  id?: string;
+  description: string;
+  prompt: string;
+  tracks: AgentTrack[];
+  enabled: boolean;
+  default: boolean;
+  model: string;
+};
+
 export type LoginResult = {
   ok: boolean;
   username?: string;
@@ -256,6 +294,17 @@ export const api = {
     req<LlmProfile & { ok: boolean }>("/api/settings/llm", { method: "POST", headers: J, body: JSON.stringify(body) }),
   testLlmProfile: (body: LlmProfileInput) =>
     req<LlmTestResult>("/api/settings/llm/test", { method: "POST", headers: J, body: JSON.stringify(body) }),
+  listAgents: () => req<AgentsSnapshot>("/api/agents"),
+  createAgent: (body: AgentDraft & { id: string }) =>
+    req<AgentsSnapshot>("/api/agents", { method: "POST", headers: J, body: JSON.stringify(body) }),
+  patchAgent: (id: string, body: Partial<AgentDraft>) =>
+    req<AgentsSnapshot>(`/api/agents/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: J,
+      body: JSON.stringify(body),
+    }),
+  deleteAgent: (id: string) =>
+    req<AgentsSnapshot>(`/api/agents/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
   listProjects: () => req<Project[]>("/api/projects"),
   getProject: (id: string) => req<Project>(`/api/projects/${id}`),

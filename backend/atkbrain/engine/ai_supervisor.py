@@ -153,16 +153,44 @@ def supervisor_system_prompt(objective: str | None = None, *, output_lang: objec
     elif objective_is_src(objective):
         extra = _ENUM_SRC
         text = SUPERVISOR_SYSTEM.replace(_ENUM_SHARED, extra)
-        return with_output_lang(
+        text = _with_agent_enum(
             text.replace(_RT_GOAL_LINE, _SRC_GOAL_LINE)
             .replace(_RT_TARGET_LINE, _SRC_TARGET_LINE)
             .replace(_RT_BIND_CLOSE, _SRC_BIND_CLOSE)
             .replace(_RT_CHAIN_MUST, _SRC_CHAIN_MUST),
-            output_lang,
+            objective,
         )
+        return with_output_lang(text, output_lang)
     else:
         extra = _ENUM_REDTEAM
-    return with_output_lang(SUPERVISOR_SYSTEM.replace(_ENUM_SHARED, extra), output_lang)
+    text = _with_agent_enum(SUPERVISOR_SYSTEM.replace(_ENUM_SHARED, extra), objective)
+    return with_output_lang(text, output_lang)
+
+
+_AGENT_ENUM_RE = re.compile(r'"subagents": \[[^\]]*\]')
+
+
+def _with_agent_enum(text: str, objective: str | None) -> str:
+    """把御主 JSON 里的角色枚举替换成当前控制台启用的角色。"""
+    from ..agents.prompts import build_subagents
+
+    agents = build_subagents(objective)
+    names = list(agents)
+    if names:
+        text = _AGENT_ENUM_RE.sub(
+            '"subagents": ["' + "|".join(names) + '"]', text, count=1
+        )
+    custom = [
+        (name, str(spec.get("description") or "").strip())
+        for name, spec in agents.items() if spec.get("custom")
+    ]
+    if custom:
+        lines = [
+            f"- `{name}`：{desc or '（无描述）'}"
+            for name, desc in custom
+        ]
+        text += "\n\n可用自定义工人（按 description 选用，不要编造其它名字）：\n" + "\n".join(lines)
+    return text
 
 SUPERVISOR_RUNTIME_SYSTEM = """你是 StrikeAgent_AtkBrain-Flash 的御主，不是执行层。
 本轮是运行时审查：CTF 单题已跑过一段时间，由你判断这一猎是否还值得继续。不要写某题 payload。循环不会按轮次硬停，停或续跑只看你的 continue。

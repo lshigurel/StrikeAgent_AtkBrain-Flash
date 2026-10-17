@@ -147,6 +147,10 @@ class ProjectAgent:
             self._output_lang(),
         )
 
+    def _role_model(self, role: str) -> str:
+        spec = self._roles.get(role) or {}
+        return str(spec.get("model") or self.model or "").strip()
+
     def _fanout_roles(self) -> list[str]:
         raw = list(getattr(self.ctx, "fanout_roles", None) or [])
         known = set(self._roles)
@@ -669,7 +673,7 @@ class ProjectAgent:
                 emit=emit,
                 run_id=self.ctx.run_id,
                 on_activity=self.ctx.mark_activity,
-                model=self.model,
+                model=self._role_model(role),
                 skill_paths=skill_abs_paths(self.workspace_dir, self._project_skill_names),
             )
             await sess.start()

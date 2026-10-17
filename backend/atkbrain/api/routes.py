@@ -42,6 +42,8 @@ from ..report.poc import poc_for_finding
 from .. import cluster as cluster_mod
 from .. import benchmark as bmk
 from ..agents.mcp_http import router as mcp_router
+from ..agents.agent_registry import STORE as agent_store, BUILTIN_TRACKS
+from ..agents.prompts import _builtin_subagents
 
 
 def _project_http_target(p: dict | None) -> str:
@@ -403,6 +405,87 @@ async def set_concurrency(req: ConcurrencyReq):
         "ctf": snap["ctf"],
         "claude": snap["claude"],
     }
+
+
+class AgentCreateReq(BaseModel):
+    id: str
+    description: str = ""
+    prompt: str = ""
+    tracks: list[str] = []
+    enabled: bool = True
+    default: bool = False
+    model: str = ""
+
+
+class AgentPatchReq(BaseModel):
+    description: str | None = None
+    prompt: str | None = None
+    tracks: list[str] | None = None
+    enabled: bool | None = None
+    default: bool | None = None
+    model: str | None = None
+
+
+def _agents_payload() -> dict:
+    """内置角色描述按赛道取默认实现；自定义角色来自 agents.json。"""
+    snap = agent_store.snapshot()
+    by_track = {
+        track: {
+            role: str(spec.get("description") or "")
+            for role, spec in _builtin_subagents(track).items()
+        }
+        for track in ("redteam", "flag", "src")
+    }
+    for row in snap["builtin"]:
+        row["descriptions"] = {
+            track: by_track.get(track, {}).get(row["id"], "")
+            for track in row["tracks"]
+        }
+    return snap
+
+
+@router.get("/agents")
+async def api_agents():
+    return _agents_payload()
+
+
+@router.post("/agents")
+async def api_create_agent(req: AgentCreateReq):
+    try:
+        agent_store.create_custom(
+            agent_id=req.id,
+            description=req.description,
+            prompt=req.prompt,
+            tracks=req.tracks,
+            enabled=req.enabled,
+            default=req.default,
+            model=req.model,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _agents_payload()
+
+
+@router.patch("/agents/{agent_id}")
+async def api_update_agent(agent_id: str, req: AgentPatchReq):
+    fields = req.model_dump(exclude_unset=True)
+    try:
+        if agent_id in BUILTIN_TRACKS:
+            agent_store.update_builtin(agent_id, **fields)
+        else:
+            agent_store.update_custom(agent_id, **fields)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _agents_payload()
+
+
+@router.delete("/agents/{agent_id}")
+async def api_delete_agent(agent_id: str):
+    try:
+        agent_store.delete_custom(agent_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _agents_payload()
 
 
 @router.get("/proxy/status")

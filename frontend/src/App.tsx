@@ -5,6 +5,7 @@ import { ProjectsPage } from "./pages/ProjectsPage";
 import { ProjectPage } from "./pages/ProjectPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { VulnsPage } from "./pages/VulnsPage";
+import { AgentsPage } from "./pages/AgentsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { AboutPage } from "./pages/AboutPage";
 
@@ -22,6 +23,7 @@ export default function App() {
                 <Routes>
                   <Route path="/" element={<ProjectsPage />} />
                   <Route path="/vulns" element={<VulnsPage />} />
+                  <Route path="/agents" element={<AgentsPage />} />
                   <Route path="/project/:id" element={<ProjectPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                   <Route path="/intro" element={<Navigate to="/" replace />} />

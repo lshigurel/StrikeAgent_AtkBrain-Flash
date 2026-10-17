@@ -567,11 +567,19 @@ def tool_list_for_prompt(objective: str = "getshell") -> str:
 
 
 def default_fanout_roles(objective: str = "getshell") -> list[str]:
+    from .agent_registry import default_extra_roles
+
     if objective_allows_flag(objective):
-        return ["web-exploit", "recon"]
-    if objective_is_src(objective):
-        return ["src-hunt", "recon"]
-    return ["web-exploit", "recon"]
+        base = ["web-exploit", "recon"]
+    elif objective_is_src(objective):
+        base = ["src-hunt", "recon"]
+    else:
+        base = ["web-exploit", "recon"]
+    out: list[str] = []
+    for name in [*base, *default_extra_roles(objective)]:
+        if name not in out:
+            out.append(name)
+    return out
 
 
 FINDING_REVIEW_ROLE = "finding-review"
@@ -974,7 +982,7 @@ def build_turn_instruction(
     )
 
 
-def build_subagents(objective: str = "getshell") -> dict[str, dict]:
+def _builtin_subagents(objective: str = "getshell") -> dict[str, dict]:
     allows_flag = objective_allows_flag(objective)
     is_src = objective_is_src(objective)
     if allows_flag:
@@ -1164,3 +1172,10 @@ def build_subagents(objective: str = "getshell") -> dict[str, dict]:
             ),
         }
     return agents
+
+
+def build_subagents(objective: str = "getshell") -> dict[str, dict]:
+    """内置角色 + Web 控制台的启停/自定义角色配置。"""
+    from .agent_registry import apply_agent_config
+
+    return apply_agent_config(_builtin_subagents(objective), objective)
