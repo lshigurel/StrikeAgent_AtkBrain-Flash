@@ -9,6 +9,10 @@ from ..events import emit
 from .config import ConfigStore, ROLES
 from .transport import McpTransport, TransportError
 
+# Large MCP servers (for example HexStrike's 150 tools) need a larger catalog
+# envelope. Individual tool results remain capped at 65536 bytes in transport.py.
+MAX_CATALOG_BYTES = 262144
+
 def response(text: str, code: str|None=None) -> dict:
     return {"content":[{"type":"text","text":text}],"is_error":code is not None,"code":code}
 
@@ -66,7 +70,7 @@ class McpBridge:
                         results.append({"server_id":server.id,"error_code":error.code})
             # Discovery schemas must remain complete; reject oversize rather than truncate JSON.
             raw=json.dumps({"tools":results},ensure_ascii=False)
-            if len(raw.encode())>65536:
+            if len(raw.encode())>MAX_CATALOG_BYTES:
                 return response("Tool catalog too large; select one server and narrow its allowlist","catalog_too_large")
             return response(raw)
         return await self._owned(ctx.project_id,operation)
