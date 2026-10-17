@@ -131,6 +131,7 @@ class CreateProjectReq(BaseModel):
     output_lang: str | None = None       # 已锁定中文；传入值忽略
     hint: str | None = None              # 附加信息：登录信息或题目线索
     ctf_category: str | None = None      # web | pwn | reverse | misc | crypto
+    flag_count: int | None = None        # CTF 单题需要夺齐的 flag 数（1-100）
 
 
 class OutputLangReq(BaseModel):
@@ -583,6 +584,17 @@ def _resolve_track_objective(track: str | None, objective: str | None) -> tuple[
     return t, obj
 
 
+def _normalize_ctf_flag_count(value: int | None) -> int:
+    """CTF 单题 flag 数：默认 1，限制 1-100。"""
+    try:
+        n = int(value if value is not None else 1)
+    except (TypeError, ValueError):
+        raise ValueError("flag 数量必须是 1-100 的整数") from None
+    if n < 1 or n > 100:
+        raise ValueError("flag 数量需在 1-100 之间")
+    return n
+
+
 @router.post("/projects")
 async def api_create_project(req: CreateProjectReq):
     track, objective = _resolve_track_objective(req.track, req.objective)
@@ -605,6 +617,10 @@ async def api_create_project(req: CreateProjectReq):
         if not category:
             raise HTTPException(400, "CTF 需要选择题型：Web、PWN、逆向、杂项、密码学")
         cfg["ctf_category"] = category
+        try:
+            cfg["flag_count"] = _normalize_ctf_flag_count(req.flag_count)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
     if track in ("redteam", "src"):
         from ..agents.brief_creds import extract_supplied_auth, merge_supplied_auth
         supplied = merge_supplied_auth(

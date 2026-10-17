@@ -162,6 +162,7 @@ function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
   const nav = useNavigate();
   const [track, setTrack] = useState<"redteam" | "ctf">("redteam");
   const [ctfType, setCtfType] = useState<CtfType>("web");
+  const [flagCount, setFlagCount] = useState("1");
   const [name, setName] = useState("");
   const [targets, setTargets] = useState("");
   const [note, setNote] = useState("");
@@ -220,9 +221,15 @@ function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
     const batch = lines.length > 1;
     try {
       if (track === "ctf" && !ctfType) throw new Error(t("projects.needCtfType"));
+      if (track === "ctf" && (!/^\d+$/.test(flagCount) || Number(flagCount) < 1 || Number(flagCount) > 100)) {
+        throw new Error(t("projects.needFlagCount"));
+      }
       if (!lines.length && !(track === "ctf" && files.length)) throw new Error(track === "ctf" ? t("projects.needTargetOrFile") : t("projects.needTarget"));
       const body: any = { name, track, output_lang: "zh", hint: note.trim() };
-      if (track === "ctf") body.ctf_category = ctfType;
+      if (track === "ctf") {
+        body.ctf_category = ctfType;
+        body.flag_count = Number(flagCount);
+      }
       if (!lines.length) {
         body.kind = "single";
       } else if (!batch) {
@@ -306,6 +313,20 @@ function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
             ))}
           </div>
           <span style={{ fontSize: 12, color: "var(--muted)", marginTop: 6, display: "block", lineHeight: 1.55 }}>{typeSummary[ctfType]}</span>
+          <label className="field" style={{ marginTop: 12 }}>
+            <span>{t("projects.flagCount")}</span>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              max={100}
+              step={1}
+              value={flagCount}
+              onChange={(e) => setFlagCount(e.target.value)}
+              style={{ marginTop: 6, maxWidth: 160 }}
+            />
+            <span style={{ fontSize: 12, color: "var(--muted)", marginTop: 6, display: "block", lineHeight: 1.55 }}>{t("projects.flagCountHint")}</span>
+          </label>
           <div className="field" style={{ marginTop: 12 }}>
             <span>{t("projects.ctfFiles")}</span>
             <div className="row" style={{ gap: 8, marginTop: 4 }}>
