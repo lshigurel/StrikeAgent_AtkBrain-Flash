@@ -151,7 +151,7 @@ function maybeLoginRedirect(r: Response, input: RequestInfo | URL) {
 }
 
 /** fetch 包装：GET 遇瞬时断连自动重试；把 Failed to fetch 转成可读错误。 */
-async function req<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
+export async function req<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
   const headers = { ...authHeaders(), ...(init?.headers as Record<string, string> | undefined) };
   const method = String(init?.method || "GET").toUpperCase();
   const retryable = method === "GET" || method === "HEAD";

@@ -4,6 +4,7 @@ import { useAuth } from "../AuthGate";
 import { Modal } from "../components/Modal";
 import { PasswordChangeForm } from "../components/PasswordChangeForm";
 import { useT } from "../i18n";
+import { McpSettingsPanel } from "../features/mcp/McpSettingsPanel";
 
 type HuntClocks = {
   loop_max_turns: number;
@@ -258,6 +259,7 @@ export function SettingsPage() {
         </Modal>
       ) : null}
       <div className="settings-grid">
+        <McpSettingsPanel />
         {me?.authenticated ? (
           <section className="card-cream" style={{ gridColumn: "1 / -1" }}>
             <h3>{t("password.settingsTitle")}</h3>
