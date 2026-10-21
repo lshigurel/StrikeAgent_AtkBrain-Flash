@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY,
 } from "d3-force";
 import type { Graph, GraphEdge, GraphNode } from "../../types";
-import { nodeTypeColor, graphNodeTypeLabel, graphNodeDisplayType, graphNodeDisplaySeverity, isGetshellNode, showsShellStar, severityColor, severityLabel, displayFindingSeverity, lateralColor, formatNodeDetail, scrubCandidateRceLabel } from "../../theme";
+import { nodeTypeColor, nodeTypeLabel, graphNodeTypeLabel, graphNodeDisplayType, graphNodeDisplaySeverity, isGetshellNode, showsShellStar, severityColor, severityLabel, displayFindingSeverity, lateralColor, formatNodeDetail, scrubCandidateRceLabel } from "../../theme";
 import { useT } from "../../i18n";
 
 interface SimNode extends GraphNode {
@@ -38,6 +38,8 @@ const TYPE_RING: Record<string, number> = {
 };
 
 const LEGEND_TYPE_KEYS = ["target", "service", "danger", "vuln", "credential", "foothold", "info"] as const;
+const FILTER_TYPE_KEYS = [...LEGEND_TYPE_KEYS, "goal", "honeypot"];
+const FILTER_SEVERITY_KEYS = ["critical", "high", "medium", "low", "info"];
 
 function graphTitle(title?: string) {
   const t = scrubCandidateRceLabel(title) || title || "";
@@ -438,8 +440,34 @@ function topologyKey(graph: Graph) {
   return `${nk}|${ek}|chain`;
 }
 
-export function AttackGraph({ graph, onSelect, selectedKey, onClear }: { graph: Graph; onSelect: (n: GraphNode) => void; selectedKey?: string; onClear?: () => void }) {
+export function AttackGraph({ graph: sourceGraph, onSelect, selectedKey, onClear }: { graph: Graph; onSelect: (n: GraphNode) => void; selectedKey?: string; onClear?: () => void }) {
   const { t } = useT();
+  const filterId = useId();
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(() => new Set());
+  const [hiddenSeverities, setHiddenSeverities] = useState<Set<string>>(() => new Set());
+  const { typeCounts, severityCounts } = useMemo(() => {
+    const typeCounts = new Map<string, number>(FILTER_TYPE_KEYS.map((key) => [key, 0]));
+    const severityCounts = new Map<string, number>(FILTER_SEVERITY_KEYS.map((key) => [key, 0]));
+    for (const node of sourceGraph.nodes) {
+      const type = graphNodeDisplayType(node);
+      const severity = graphNodeDisplaySeverity(node);
+      typeCounts.set(type, (typeCounts.get(type) || 0) + 1);
+      severityCounts.set(severity, (severityCounts.get(severity) || 0) + 1);
+    }
+    return { typeCounts, severityCounts };
+  }, [sourceGraph.nodes]);
+  const graph = useMemo(() => {
+    const nodes = sourceGraph.nodes.filter((node) => (
+      !hiddenTypes.has(graphNodeDisplayType(node)) && !hiddenSeverities.has(graphNodeDisplaySeverity(node))
+    ));
+    const keys = new Set(nodes.map((node) => node.key));
+    return { ...sourceGraph, nodes, edges: sourceGraph.edges.filter((edge) => keys.has(edge.from) && keys.has(edge.to)) };
+  }, [sourceGraph, hiddenTypes, hiddenSeverities]);
+  const selectionHidden = !!selectedKey && !graph.nodes.some((node) => node.key === selectedKey);
+  useEffect(() => {
+    if (selectionHidden) onClear?.();
+  }, [selectionHidden, selectedKey, onClear]);
   const wrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const simRef = useRef<any>(null);
@@ -614,7 +642,12 @@ export function AttackGraph({ graph, onSelect, selectedKey, onClear }: { graph: 
   // 同步算完再画。实时 tick 会先把点甩开，第一帧就是错的。
   const finishLayout = useCallback((reseed: boolean) => {
     const nodes = nodesRef.current;
-    if (!nodes.length) return;
+    if (!nodes.length) {
+      simRef.current?.stop();
+      if (autoFitRef.current) fitToNodes();
+      setFrame((frame) => frame + 1);
+      return;
+    }
     if (reseed) reseedLayout(nodes);
     simRef.current?.stop();
     const sim = forceSimulation<SimNode>(nodes).alphaDecay(0.055).velocityDecay(0.45).stop();
@@ -746,6 +779,20 @@ export function AttackGraph({ graph, onSelect, selectedKey, onClear }: { graph: 
       simRef.current?.stop();
     };
   }, [topo, layoutReady, finishLayout]);
+
+  useEffect(() => {
+    if (!layoutReady) return;
+    const byKey = new Map(graph.nodes.map((node) => [node.key, node]));
+    for (const node of nodesRef.current) {
+      const latest = byKey.get(node.key);
+      if (latest) Object.assign(node, latest, {
+        detail: latest.detail,
+        created_at: latest.created_at,
+        updated_at: latest.updated_at,
+      });
+    }
+    setFrame((frame) => frame + 1);
+  }, [graph.nodes, layoutReady]);
 
   // 指针锚定滚轮缩放
   useEffect(() => {
@@ -883,6 +930,28 @@ export function AttackGraph({ graph, onSelect, selectedKey, onClear }: { graph: 
     finishLayout(true);
   };
 
+  const prepareFilterChange = () => {
+    autoFitRef.current = true;
+    fitPendingRef.current = true;
+  };
+
+  const toggleFilter = (key: string, dimension: "type" | "severity") => {
+    prepareFilterChange();
+    const update = dimension === "type" ? setHiddenTypes : setHiddenSeverities;
+    update((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const showAll = () => {
+    prepareFilterChange();
+    setHiddenTypes(new Set());
+    setHiddenSeverities(new Set());
+  };
+
   const nodes = nodesRef.current;
   const links = linksRef.current;
   const nodeByKey = new Map(nodes.map((n) => [n.key, n]));
@@ -901,7 +970,59 @@ export function AttackGraph({ graph, onSelect, selectedKey, onClear }: { graph: 
       className={`graph-wrap${fullscreen ? " graph-wrap-fs" : ""}`}
       style={{ height: fullscreen ? "100%" : H }}
     >
-      <div className="graph-controls">
+      <div className="graph-toolbar">
+        <div className="graph-filter">
+          <button
+            type="button"
+            className={`graph-ctrl-btn${hiddenTypes.size || hiddenSeverities.size ? " is-active" : ""}`}
+            aria-expanded={filtersOpen}
+            aria-controls={filterId}
+            onClick={() => setFiltersOpen((open) => !open)}
+          >
+            {t("graph.filters")}
+          </button>
+          <span className="graph-filter-count" role="status">
+            {t("graph.visibleCount", { shown: graph.nodes.length, total: sourceGraph.nodes.length })}
+          </span>
+          {filtersOpen && (
+            <div className="graph-filter-options" id={filterId} onKeyDown={(event) => {
+              if (event.key === "Escape") setFiltersOpen(false);
+            }}>
+              <div className="graph-filter-actions">
+                <button type="button" className="graph-ctrl-btn" onClick={showAll}>{t("graph.showAll")}</button>
+                <button type="button" className="graph-ctrl-btn" onClick={() => {
+                  prepareFilterChange();
+                  setHiddenTypes((previous) => new Set([...previous, "info"]));
+                }}>{t("graph.hideInfo")}</button>
+              </div>
+              <fieldset>
+                <legend>{t("graph.filterTypes")}</legend>
+                <div className="graph-filter-choices">
+                  {Array.from(typeCounts, ([key, count]) => (
+                    <label className="graph-filter-option" key={key}>
+                      <input type="checkbox" checked={!hiddenTypes.has(key)} onChange={() => toggleFilter(key, "type")} />
+                      <i className="dot" style={{ background: nodeTypeColor[key] || nodeTypeColor.info }} />
+                      <span>{key === "goal" ? t("graph.goalGeneric") : nodeTypeLabel(key)} ({count})</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              <fieldset>
+                <legend>{t("graph.filterSeverities")}</legend>
+                <div className="graph-filter-choices">
+                  {Array.from(severityCounts, ([key, count]) => (
+                    <label className="graph-filter-option" key={key}>
+                      <input type="checkbox" checked={!hiddenSeverities.has(key)} onChange={() => toggleFilter(key, "severity")} />
+                      <i className="dot" style={{ background: severityColor[key] || severityColor.info }} />
+                      <span>{severityLabel(key)} ({count})</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            </div>
+          )}
+        </div>
+        <div className="graph-controls">
         <button type="button" className="graph-ctrl-btn" title={t("graph.relayoutTitle")} onClick={relayout}>
           {t("graph.relayout")}
         </button>
@@ -916,7 +1037,12 @@ export function AttackGraph({ graph, onSelect, selectedKey, onClear }: { graph: 
         >
           {fullscreen ? t("graph.exitFull") : t("graph.full")}
         </button>
+        </div>
       </div>
+
+      {graph.nodes.length === 0 && (
+        <div className="graph-filter-empty">{t(sourceGraph.nodes.length ? "graph.noMatchingNodes" : "graph.noNodes")}</div>
+      )}
 
       {graph.stats?.lateral_active && (
         <div className="graph-lateral-banner">
@@ -961,20 +1087,21 @@ export function AttackGraph({ graph, onSelect, selectedKey, onClear }: { graph: 
           })}
           {(() => {
             const segments = rcePaths.flatMap((path) => {
-              const pts = path
-                .map((k) => nodes.find((n) => n.key === k))
-                .filter((n): n is SimNode => !!n && Number.isFinite(n.x) && Number.isFinite(n.y));
-              if (pts.length < 2) return [];
               const own: SimNode[][] = [];
-              let cur: SimNode[] = [pts[0]];
-              for (let i = 1; i < pts.length; i++) {
-                const a = pts[i - 1];
-                const b = pts[i];
-                if (pivotPairs.has(`${a.key}\0${b.key}`)) {
+              let cur: SimNode[] = [];
+              for (const key of path) {
+                const node = nodeByKey.get(key);
+                if (!node || !isFinitePos(node)) {
                   if (cur.length >= 2) own.push(cur);
-                  cur = [b];
+                  cur = [];
+                  continue;
+                }
+                const previous = cur[cur.length - 1];
+                if (previous && pivotPairs.has(`${previous.key}\0${node.key}`)) {
+                  if (cur.length >= 2) own.push(cur);
+                  cur = [node];
                 } else {
-                  cur.push(b);
+                  cur.push(node);
                 }
               }
               if (cur.length >= 2) own.push(cur);

@@ -544,9 +544,34 @@ label.field > span { display: block; font-size: 13px; color: var(--muted); margi
 .graph-wrap-fs { border-radius: 0; background: var(--surface-soft); }
 .graph-wrap:fullscreen { width: 100vw; height: 100vh !important; }
 .graph-wrap-fs .legend { max-width: min(90%, 720px); }
-.graph-controls {
-  position: absolute; top: 10px; right: 10px; z-index: 3;
-  display: flex; gap: 6px;
+.graph-toolbar {
+  position: absolute; top: 10px; left: 10px; right: 10px; z-index: 6;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; pointer-events: none;
+}
+.graph-controls { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; pointer-events: auto; }
+.graph-filter { display: flex; align-items: center; gap: 8px; pointer-events: auto; }
+.graph-filter-count { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.graph-filter-options {
+  position: absolute; left: 0; top: calc(100% + 8px); width: min(380px, 100%);
+  max-height: min(360px, calc(100vh - 160px)); overflow-y: auto;
+  padding: 12px; border: 1px solid var(--hairline); border-radius: 10px;
+  background: var(--surface-soft); box-shadow: 0 8px 24px rgba(0,0,0,.12);
+}
+.graph-filter-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.graph-filter-options fieldset { border: 0; padding: 0; margin: 0 0 12px; min-width: 0; }
+.graph-filter-options fieldset:last-child { margin-bottom: 0; }
+.graph-filter-options legend { padding: 0; margin-bottom: 8px; color: var(--ink); font-size: 12px; font-weight: 600; }
+.graph-filter-choices { display: flex; flex-wrap: wrap; gap: 6px; }
+.graph-filter-option {
+  display: inline-flex; align-items: center; gap: 5px; padding: 5px 7px;
+  border: 1px solid var(--hairline); border-radius: 6px; font-size: 12px; cursor: pointer;
+}
+.graph-filter-option:has(input:checked) { background: var(--surface-card); color: var(--ink); }
+.graph-filter-option input { margin: 0; width: 13px; height: 13px; accent-color: var(--primary); }
+.graph-filter-option .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.graph-filter-empty {
+  position: absolute; top: 45%; left: 12px; right: 12px;
+  text-align: center; color: var(--muted); font-size: 13px; pointer-events: none;
 }
 .graph-ctrl-btn {
   appearance: none; border: 1px solid var(--hairline); background: rgba(250,249,245,0.94);
@@ -554,6 +579,7 @@ label.field > span { display: block; font-size: 13px; color: var(--muted); margi
   cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,0.04);
 }
 .graph-ctrl-btn:hover { background: #fff; border-color: var(--primary); color: var(--primary); }
+.graph-ctrl-btn.is-active { border-color: var(--primary); color: var(--primary-active); }
 .graph-node-label { font-family: var(--font-sans); font-size: 10.5px; fill: var(--body); pointer-events: none; }
 .graph-node-popover {
   position: absolute; z-index: 50; display: grid; gap: 6px;
