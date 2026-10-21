@@ -12,7 +12,7 @@ const BATCH_FLUSH_MS = 120;
 /** 关系图/进度类事件必须立刻投递，不能跟 tool/log 一起排队，更不能被 80 条洪峰裁掉。 */
 const URGENT_TYPES = new Set([
   "snapshot", "shell", "finding", "status", "steer", "supervisor",
-  "node", "edge", "rce_path", "lateral",
+  "node", "edge", "rce_path", "lateral", "flag",
 ]);
 
 export function useProjectSocket(projectId: string | undefined, handlers: Handlers) {

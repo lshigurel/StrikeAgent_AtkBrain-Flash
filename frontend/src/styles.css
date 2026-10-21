@@ -1,3 +1,12 @@
+.card-cream.flag-card { padding: 14px; margin-bottom: 10px; min-width: 0; }
+.spread.flag-card-header { gap: 8px; align-items: flex-start; flex-wrap: wrap; }
+.row.flag-card-labels { gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.flag-card-header button { flex-shrink: 0; }
+.flag-value { display: block; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; user-select: text; font-size: 13px; line-height: 1.6; margin: 12px 0; }
+.flag-time { font-size: 12px; }
+.flags-error { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; color: var(--error); font-size: 13px; }
+.flags-copy-error { color: var(--error); font-size: 12px; margin: 8px 0 0; }
+
 :root {
   --primary: #cc785c;
   --primary-active: #a9583e;

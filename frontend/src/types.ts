@@ -1,3 +1,15 @@
+export interface CapturedFlag {
+  id: string;
+  project_id: string;
+  unique_code: string | null;
+  flag_index: number | null;
+  value: string;
+  submitted: number;
+  correct: number;
+  awarded: number;
+  created_at: number;
+}
+
 export interface Stats {
   nodes: number;
   services?: number;

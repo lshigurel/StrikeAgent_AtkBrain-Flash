@@ -1,4 +1,4 @@
-import type { AppVersion, FindingDetail, Graph, Project, RTEvent } from "./types";
+import type { AppVersion, CapturedFlag, FindingDetail, Graph, Project, RTEvent } from "./types";
 import { getLocale } from "./i18n/locale";
 import { t } from "./i18n/t";
 import { appBase, withAppBase } from "./appBase";
@@ -392,7 +392,7 @@ export const api = {
   stopAll: (id: string) =>
     req<any>(`/api/projects/${id}/stop_all`, { method: "POST" }),
 
-  flags: (id: string) => req<any[]>(`/api/projects/${id}/flags`),
+  flags: (id: string) => req<CapturedFlag[]>(`/api/projects/${id}/flags`),
 
   bmImport: (id: string) => req<any>(`/api/projects/${id}/benchmark/import`, { method: "POST" }),
   scoreboard: (id: string) => req<any>(`/api/projects/${id}/benchmark/scoreboard`),

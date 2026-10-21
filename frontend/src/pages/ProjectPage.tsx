@@ -9,6 +9,8 @@ import { Timeline } from "../features/timeline/Timeline";
 import { SupervisorPanel, countSupervisorRecords } from "../features/timeline/SupervisorPanel";
 import { FindingsPanel, collectVulns, filterVisibleFindings, latestFindingReview, FindingReviewBanner } from "../features/findings/FindingsPanel";
 import { ServicesPanel } from "../features/services/ServicesPanel";
+import { FlagsPanel } from "../features/flags/FlagsPanel";
+import { useProjectFlags } from "../features/flags/useProjectFlags";
 import { MemoryPanel } from "../features/memory/MemoryPanel";
 import { ChatDock } from "../features/chat/ChatDock";
 import { ClusterDashboard } from "../features/cluster/ClusterDashboard";
@@ -145,7 +147,10 @@ export function ProjectPage() {
   const [running, setRunning] = useState(false);
   const [queued, setQueued] = useState(false);
   const [selected, setSelected] = useState<GraphNode | null>(null);
-  const [tab, setTab] = useState<"timeline" | "findings" | "services" | "memory" | "supervisor">("timeline");
+  const [tab, setTab] = useState<"timeline" | "findings" | "services" | "flags" | "memory" | "supervisor">("timeline");
+  const [flagRevision, setFlagRevision] = useState(0);
+  const flagProjectId = project?.id === id && project?.kind === "single" && (project.config?.objective === "flag" || project.config?.track === "ctf") ? id : undefined;
+  const flagState = useProjectFlags(flagProjectId, flagRevision, running && !queued);
   const [liveWs, setLiveWs] = useState(false);
   const [loadErr, setLoadErr] = useState("");
   const refetchTimer = useRef<any>();
@@ -161,6 +166,7 @@ export function ProjectPage() {
     setLiveWs(false);
     setEvents([]);
     setGraph(EMPTY);
+    setTab("timeline");
     api.getProject(id).then((p) => {
       setProject(p);
       setGraph(p.graph || EMPTY);
@@ -250,6 +256,7 @@ export function ProjectPage() {
       if (ev.type === "shell") setRunning(false);
     }
     setEvents((prev) => capEvents([...prev, ...batch]));
+    if (batch.some(ev => ev.type === "flag")) setFlagRevision(value => value + 1);
     if (graphPatch.length) {
       setGraph((g) => graphPatch.reduce(applyGraphEvent, g));
       scheduleRefetch();
@@ -258,6 +265,7 @@ export function ProjectPage() {
 
   const { send } = useProjectSocket(liveWs ? id : undefined, {
     onSnapshot: (g, r, q) => {
+      setFlagRevision(value => value + 1);
       setGraph((prev) => keepLayoutIfUnchanged(prev, g));
       setRunning(r);
       if (typeof q === "boolean") setQueued(q);
@@ -374,12 +382,13 @@ export function ProjectPage() {
   const shownStatus = listStatusOf({ ...project, running, queued });
   const needed = Number(project.config?.flag_count) || 1;
   const canResume = (graph.stats?.nodes || 0) > 0 || events.length > 0;
-  const flagsCorrect = graph.nodes.filter((n) =>
+  const graphFlagsCorrect = graph.nodes.filter((n) =>
     n.type === "goal" && (
       String(n.key || "").startsWith("goal:flag")
       || (n.tags || []).some((t) => t === "flag" || t === "getflag")
     )
   ).length;
+  const flagsCorrect = flagState.loaded ? flagState.flags.filter(flag => flag.correct).length : graphFlagsCorrect;
   const totalScore = Number(project.config?.total_score) || 0;
   const ctfFull = isFlag && flagsCorrect >= needed;
   const ctfProgress = isFlag
@@ -487,7 +496,7 @@ export function ProjectPage() {
         </div>
         <div className="card-cream project-side-pane">
           <div className="tabs project-side-tabs">
-            {([["timeline", t("project.tabTimeline")], ["findings", t("project.tabFindings", { n: visibleFindings.length || "" })], ["services", t("project.tabServices", { n: serviceCount || "" })], ["memory", t("project.tabMemory")], ["supervisor", t("project.tabSupervisor", { n: supervisorCount || "" })]] as const).map(([k, label]) => (
+            {([["timeline", t("project.tabTimeline")], ["findings", t("project.tabFindings", { n: visibleFindings.length || "" })], ["services", t("project.tabServices", { n: serviceCount || "" })], ...(isFlag ? [["flags", t("project.tabFlags", { n: flagState.loaded ? flagState.flags.length : "…" })] as const] : []), ["memory", t("project.tabMemory")], ["supervisor", t("project.tabSupervisor", { n: supervisorCount || "" })]] as const).map(([k, label]) => (
               <div key={k} className={`tab ${tab === k ? "active" : ""}`} onClick={() => setTab(k)}>{label}</div>
             ))}
           </div>
@@ -510,6 +519,7 @@ export function ProjectPage() {
               />
             )}
             {tab === "services" && <ServicesPanel graph={graph} onSelect={onSelect} />}
+            {tab === "flags" && isFlag && <FlagsPanel key={id} flags={flagState.flags} loading={flagState.loading} error={flagState.error} onRetry={flagState.retry} />}
             {tab === "memory" && <MemoryPanel projectId={id!} />}
             {tab === "supervisor" && <SupervisorPanel events={events} />}
           </div>

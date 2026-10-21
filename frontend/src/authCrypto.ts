@@ -16,7 +16,7 @@ function bytesToB64(buf: ArrayBuffer | Uint8Array): string {
   return btoa(s);
 }
 
-function loginPayload(password: string, challengeId: string): Uint8Array {
+function loginPayload(password: string, challengeId: string): Uint8Array<ArrayBuffer> {
   const nonceBytes = crypto.getRandomValues(new Uint8Array(8));
   let nonce = "";
   for (const b of nonceBytes) nonce += b.toString(16).padStart(2, "0");
@@ -29,7 +29,7 @@ function loginPayload(password: string, challengeId: string): Uint8Array {
   return new TextEncoder().encode(payload);
 }
 
-async function encryptWithSubtle(pem: string, data: Uint8Array): Promise<string> {
+async function encryptWithSubtle(pem: string, data: Uint8Array<ArrayBuffer>): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
   if (!subtle) throw new Error("no subtle");
   const key = await subtle.importKey(
