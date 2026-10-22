@@ -6,6 +6,8 @@ import re
 import time
 from dataclasses import dataclass, field
 
+from .authorized_targets import audit_authorized, authorized_match
+
 INFRA_ALLOWLIST = {
     "localhost", "127.0.0.1", "::1", "0.0.0.0",
     "github.com", "raw.githubusercontent.com", "objects.githubusercontent.com",
@@ -15,7 +17,7 @@ INFRA_ALLOWLIST = {
 
 # 不引入完整 PSL；仅覆盖常见两段后缀
 _MULTI_PART_TLDS = frozenset({
-    "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "ac.cn",
+    "com.cn", "net.cn", "org.cn", "gov.cn",  "ac.cn", #"edu.cn",
     "co.uk", "org.uk", "ac.uk", "gov.uk",
     "co.jp", "or.jp", "ne.jp", "ac.jp",
     "com.au", "net.au", "org.au", "co.nz",
@@ -1000,6 +1002,10 @@ def sensitive_domain_reason(host: str) -> str | None:
         len(tld) == 2 and (sld in _PROTECTED_PUBLIC_SLD or sld == "go")
     )
     if not protected:
+        return None
+    allowed = authorized_match(h)
+    if allowed:
+        audit_authorized(allowed)
         return None
     return (
         f"禁止攻击政府、教育、军队或学术网域名：{h}。"

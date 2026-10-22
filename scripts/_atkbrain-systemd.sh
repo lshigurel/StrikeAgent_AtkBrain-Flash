@@ -3,7 +3,7 @@
 
 migrate_legacy_runtime() {
   local data="${REPO}/backend/data"
-  DATA_DIR="$data" /usr/bin/python3 - <<'PY'
+  DATA_DIR="$data" ${PY:-/usr/bin/python3} - <<'PY'
 import os
 from pathlib import Path
 
@@ -33,7 +33,7 @@ retire_legacy_units() {
 
 snapshot_claude_env() {
   local dest="${REPO}/backend/data/atkbrain-claude.env"
-  DEST="$dest" /usr/bin/python3 - <<'PY'
+  DEST="$dest" ${PY:-/usr/bin/python3} - <<'PY'
 import os, re
 from pathlib import Path
 
@@ -70,7 +70,7 @@ for k, v in os.environ.items():
     if k == "ATKBRAIN_HOST":
         continue
     existing[k] = v
-existing["ATKBRAIN_HOST"] = "0.0.0.0"
+existing.pop("ATKBRAIN_HOST", None)
 
 def esc(v: str) -> str:
     return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -85,7 +85,7 @@ PY
 
 snapshot_dsh_env() {
   local dest="${REPO}/backend/data/atkbrain-dsh.env"
-  DEST="$dest" /usr/bin/python3 - <<'PY'
+  DEST="$dest" ${PY:-/usr/bin/python3} - <<'PY'
 import os, re
 from pathlib import Path
 

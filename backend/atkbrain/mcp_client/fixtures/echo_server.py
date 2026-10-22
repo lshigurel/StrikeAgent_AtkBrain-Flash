@@ -26,7 +26,8 @@ if os.environ.get("PID_FILE"):
     Path(os.environ["PID_FILE"]).write_text(str(os.getpid()))
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        mcp.run(transport="streamable-http", host="127.0.0.1", port=int(sys.argv[1]))
+        transport = "sse" if len(sys.argv)>2 and sys.argv[2]=="sse" else "streamable-http"
+        mcp.run(transport=transport, host="127.0.0.1", port=int(sys.argv[1]))
     else:
         mcp.run()
 

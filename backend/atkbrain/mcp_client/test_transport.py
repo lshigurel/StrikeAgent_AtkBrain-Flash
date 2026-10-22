@@ -48,10 +48,23 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ProcessLookupError): os.kill(pid, 0)
 
     async def test_http(self):
+        await self._network_roundtrip("streamable_http")
+
+    async def test_sse(self):
+        await self._network_roundtrip("sse")
+
+    async def test_program_name_is_resolved_from_environment_path(self):
+        server = ServerConfig(id="program", transport="stdio", command="python",
+            args=[str(FIXTURE)], env={"PATH":str(Path(sys.executable).parent)+":"+os.environ["PATH"]})
+        result = await McpTransport().invoke(server, "echo", {"text":"program-name-ok"})
+        self.assertFalse(result.is_error, result)
+        self.assertIn("program-name-ok", result.text)
+
+    async def _network_roundtrip(self, transport):
         with socket.socket() as sock:
             sock.bind(("127.0.0.1",0))
             port = sock.getsockname()[1]
-        process = subprocess.Popen([sys.executable,str(FIXTURE),str(port)],
+        process = subprocess.Popen([sys.executable,str(FIXTURE),str(port),transport],
                                    stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         try:
             for _ in range(100):
@@ -60,7 +73,8 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                     w.close(); await w.wait_closed()
                     break
                 except OSError: await asyncio.sleep(.03)
-            server = ServerConfig(id="http",transport="streamable_http",url=f"http://127.0.0.1:{port}/mcp")
+            endpoint = "sse" if transport == "sse" else "mcp"
+            server = ServerConfig(id="http",transport=transport,url=f"http://127.0.0.1:{port}/{endpoint}")
             t = McpTransport()
             self.assertIn("echo",[x.name for x in await t.describe(server)])
             result = await t.invoke(server,"echo",{"text":"hello"})

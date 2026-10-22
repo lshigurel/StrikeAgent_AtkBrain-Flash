@@ -24,15 +24,14 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                                  _http_blocked=lambda url: None if url=="https://allowed.test/" else "outside")
         self.bridge=McpBridge(self.store,self.transport,lambda _:self.running)
 
-    async def test_role_and_whitelist_deny_before_connect(self):
+    async def test_role_and_disabled_server_deny_before_connect(self):
         for role in ("lead","","unknown","finding-review"):
             out=await self.bridge.call_tool(self.ctx,role,"echo","echo",{})
             self.assertTrue(out["is_error"])
-        out=await self.bridge.call_tool(self.ctx,"recon","echo","other",{})
-        self.assertTrue(out["is_error"])
         self.patch["enabled"]=False
         self.store.save([ServerConfigPatch(**self.patch)],1)
         self.assertTrue((await self.bridge.list_tools(self.ctx,"recon"))["is_error"] is False)
+        self.assertTrue((await self.bridge.call_tool(self.ctx,"recon","echo","echo",{}))["is_error"])
         self.transport.invoke.assert_not_called()
         self.transport.describe.assert_not_called()
 
@@ -97,7 +96,8 @@ class BridgeTests(unittest.IsolatedAsyncioTestCase):
                 rest=await client.post("/projects/p/agent-tools/mcp_call_tool",json=args,headers={"x-atkbrain-role":"lead"})
                 rpc=await client.post("/projects/p/mcp",json={"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mcp_call_tool","arguments":args}},headers={"x-atkbrain-role":"lead"})
                 self.assertEqual(rest.json()["text"],rpc.json()["result"]["content"][0]["text"])
-                self.assertEqual(rest.json()["text"],"MCP access denied")
+                self.assertTrue(rest.json()["is_error"])
+                self.assertTrue(rpc.json()["result"]["isError"])
 
     async def test_project_serialization_and_audit_metadata_only(self):
         inflight=0; maximum=0

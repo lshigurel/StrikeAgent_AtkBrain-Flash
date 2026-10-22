@@ -7,11 +7,14 @@ StartLimitBurst=20
 
 [Service]
 Type=simple
+User=root
+Group=root
 WorkingDirectory=__REPO__
 Environment=HOME=/root
-Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=__NODE_BIN__:__REPO__/.runtime/pi/node_modules/.bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:__REPO__/.venv312/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=ATKBRAIN_PORT=2333
 Environment=ATKBRAIN_FRONTEND_PORT=2334
+Environment=ATKBRAIN_CONSOLE_BIND=127.0.0.1
 ExecStartPre=/bin/mkdir -p __REPO__/backend/data/logs
 ExecStartPre=/bin/bash __REPO__/scripts/ensure-console-tls.sh __REPO__/backend/data/tls
 ExecStart=/bin/bash __REPO__/scripts/console-2334-proxy.sh

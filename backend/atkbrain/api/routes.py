@@ -415,6 +415,7 @@ class AgentCreateReq(BaseModel):
     enabled: bool = True
     default: bool = False
     model: str = ""
+    skills: list[str] | None = None
 
 
 class AgentPatchReq(BaseModel):
@@ -424,6 +425,7 @@ class AgentPatchReq(BaseModel):
     enabled: bool | None = None
     default: bool | None = None
     model: str | None = None
+    skills: list[str] | None = None
 
 
 def _agents_payload() -> dict:
@@ -444,6 +446,52 @@ def _agents_payload() -> dict:
     return snap
 
 
+@router.get("/agent-skills")
+async def api_agent_skills():
+    from ..agents.project_skills import skill_catalog
+    return skill_catalog()
+
+
+class SkillCreateReq(BaseModel):
+    name: str
+    content: str
+
+
+class SkillUpdateReq(BaseModel):
+    content: str
+    revision: str
+
+
+@router.post("/agent-skills", status_code=201)
+async def api_create_skill(req: SkillCreateReq):
+    from ..agents.project_skills import create_skill, skill_catalog
+    try:
+        create_skill(req.name, req.content)
+    except FileExistsError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except OSError:
+        raise HTTPException(500, "Skill 保存失败")
+    return skill_catalog()
+
+
+@router.put("/agent-skills/{name}")
+async def api_update_skill(name: str, req: SkillUpdateReq):
+    from ..agents.project_skills import update_skill, skill_catalog, SkillConflictError
+    try:
+        update_skill(name, req.content, req.revision)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except SkillConflictError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except OSError:
+        raise HTTPException(500, "Skill 保存失败")
+    return skill_catalog()
+
+
 @router.get("/agents")
 async def api_agents():
     return _agents_payload()
@@ -460,6 +508,7 @@ async def api_create_agent(req: AgentCreateReq):
             enabled=req.enabled,
             default=req.default,
             model=req.model,
+            skills=req.skills,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))

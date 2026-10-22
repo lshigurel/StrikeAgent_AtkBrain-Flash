@@ -13,28 +13,35 @@ need_root() { [[ "$(id -u)" -eq 0 ]] || die "需要 root（sudo）"; }
 
 # shellcheck source=/dev/null
 source "$REPO/scripts/_atkbrain-systemd.sh"
+# shellcheck source=/dev/null
+source "$REPO/scripts/_atkbrain-render.sh"
+
+export PATH="$(atkbrain_node_bin):$REPO/.runtime/pi/node_modules/.bin:$REPO/.venv312/bin:$PATH"
 
 cmd_install() {
   need_root
-  command -v npm >/dev/null || die "找不到 npm"
+  command -v npm >/dev/null || die "找不到 npm（检查 .runtime/node-*/bin）"
   [[ -f "$UNIT_SRC" ]] || die "找不到 unit: $UNIT_SRC"
   [[ -d "$REPO/frontend/node_modules" ]] || die "先在 frontend/ 执行 npm install"
   (cd "$REPO/frontend" && npm run build)
   mkdir -p "$LOG_DIR"
   retire_legacy_units
   kill_stray_frontend
-  sed "s|__REPO__|$REPO|g" "$UNIT_SRC" > "$UNIT_DST"
-  chmod 644 "$UNIT_DST"
+  render_atkbrain_unit "$UNIT_SRC" "$UNIT_DST"
   systemctl daemon-reload
   systemctl enable atkbrain-flash-frontend.service
   systemctl restart atkbrain-flash-frontend.service
   sleep 1
   cmd_status
-  echo "[*] 已安装并启动。浏览器请用 python -m atkbrain.panel 打印的带入口 URL，勿在 Cursor shell 里前台跑 npm run dev"
+  echo "[*] 已安装并启动。浏览器请用 scripts/atkbrain-panel.sh 打印的带入口 URL"
 }
 
 cmd_start() {
   need_root
+  if [[ ! -f "$UNIT_DST" ]]; then
+    cmd_install
+    return
+  fi
   mkdir -p "$LOG_DIR"
   systemctl start atkbrain-flash-frontend.service
   cmd_status
@@ -53,8 +60,7 @@ cmd_restart() {
     cmd_install
     return
   fi
-  sed "s|__REPO__|$REPO|g" "$UNIT_SRC" > "$UNIT_DST"
-  chmod 644 "$UNIT_DST"
+  render_atkbrain_unit "$UNIT_SRC" "$UNIT_DST"
   systemctl daemon-reload
   systemctl restart atkbrain-flash-frontend.service
   sleep 1

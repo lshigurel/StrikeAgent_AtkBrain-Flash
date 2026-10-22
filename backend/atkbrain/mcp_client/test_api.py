@@ -54,7 +54,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.transport.invoke.assert_not_called()
 
     async def test_invalid_and_protocol_error_do_not_echo_secrets(self):
-        self.data["servers"][0]["command"]="relative"
+        self.data["servers"][0]["command"]="relative/path"
         r=await self.client.put("/api/settings/mcp",json=self.data)
         self.assertEqual(r.status_code,422)
         self.assertNotIn("do-not-return",r.text)
@@ -65,3 +65,34 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r.json()["error_code"],"protocol_error")
         self.assertNotIn("do-not-return",r.text)
 
+
+    async def test_remote_http_connection_saves_without_connecting_or_exposing_headers(self):
+        self.data["servers"]=[{
+            "id":"remote","name":"Remote MCP","enabled":False,"transport":"streamable_http",
+            "url":"http://192.0.2.10:8011/api/mcp","command":"","args":[],"cwd":"",
+            "allowed_tools":[],"headers_patch":{"X-Api-Token":"test-header-secret"}
+        }]
+        r=await self.client.put("/api/settings/mcp",json=self.data)
+        self.assertEqual(r.status_code,200,r.text)
+        self.assertEqual(self.store.get("remote").url,"http://192.0.2.10:8011/api/mcp")
+        self.assertEqual(self.store.get("remote").headers,{"X-Api-Token":"test-header-secret"})
+        self.assertEqual(r.json()["servers"][0]["header_keys"],["X-Api-Token"])
+        self.assertNotIn("test-header-secret",r.text)
+        self.transport.describe.assert_not_called()
+        self.transport.invoke.assert_not_called()
+
+    async def test_agent_grants_roundtrip_and_validation_remains_private(self):
+        self.data["servers"][0]["allowed_agents"] = ["reverse", "custom-parser"]
+        saved = await self.client.put("/api/settings/mcp", json=self.data)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        loaded = await self.client.get("/api/settings/mcp")
+        self.assertEqual(loaded.json()["servers"][0]["allowed_agents"], ["reverse", "custom-parser"])
+        self.assertNotIn("allowed_tools", loaded.json()["servers"][0])
+        self.assertNotIn("do-not-return", loaded.text)
+        self.data["revision"] = 1
+        for invalid in (["invalid id"], ["recon", "recon"], "recon"):
+            self.data["servers"][0]["allowed_agents"] = invalid
+            result = await self.client.put("/api/settings/mcp", json=self.data)
+            self.assertEqual(result.status_code, 422)
+            self.assertNotIn("do-not-return", result.text)
+        self.assertEqual(self.store.get("echo").allowed_agents, ["reverse", "custom-parser"])

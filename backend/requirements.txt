@@ -31,3 +31,6 @@ pyotp>=2.9
 # External MCP clients (SDK 2.x)
 mcp==2.3.0
 jsonschema==4.25.1
+
+# Skill Markdown frontmatter validation
+PyYAML>=6.0

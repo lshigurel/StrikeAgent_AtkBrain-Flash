@@ -36,8 +36,8 @@ class TestConfig(unittest.TestCase):
 
     def test_reject_invalid(self):
         cases = [
-            dict(id="a", transport="stdio", command="python", cwd="/tmp"),
-            dict(id="a", transport="streamable_http", url="http://example.com/mcp"),
+            dict(id="a", transport="stdio", command="", cwd="/tmp"),
+            dict(id="a", transport="streamable_http", url="ftp://example.com/mcp"),
             dict(id="a", transport="streamable_http", url="https://user:pass@example.com/mcp"),
             dict(id="a", transport="stdio", command="/bin/echo", cwd="/tmp",
                  allowed_tools=[{"name":"get","profile":"http_url","target_pointers":[]}]),
@@ -72,3 +72,37 @@ class TestConfig(unittest.TestCase):
             self.store.save([], 0)
         self.assertEqual(self.path.read_text(), "{")
 
+
+class ConnectionFormTests(unittest.TestCase):
+    def test_display_name_bare_program_and_default_cwd(self):
+        config = ServerConfigPatch(id="local", name="本机工具", transport="stdio", command="python3")
+        self.assertEqual(config.name, "本机工具")
+        self.assertEqual(config.cwd, str(Path.home()))
+
+    def test_sse_uses_http_connection_fields(self):
+        config = ServerConfigPatch(id="sse", transport="sse", url="http://127.0.0.1:8765/sse")
+        self.assertEqual(config.transport, "sse")
+        with self.assertRaises(ValidationError):
+            ServerConfigPatch(id="sse", transport="sse", url="ftp://example.com/sse")
+
+    def test_key_updates_keep_other_saved_secrets_and_rules(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ConfigStore(Path(directory)/"mcp.json")
+            rules = [{"name":"echo","roles":["recon"],"profile":"pure"}]
+            store.save([server(env={"TOKEN":"keep-secret","OLD":"remove"},allowed_tools=rules)],0)
+            store.save([server(env_patch={"NEW":"new-secret","OLD":None},allowed_tools=rules)],1)
+            self.assertEqual(store.get("echo").env, {"TOKEN":"keep-secret","NEW":"new-secret"})
+            self.assertEqual(store.get("echo").allowed_tools[0].name,"echo")
+            self.assertNotIn("keep-secret",json.dumps(store.public_config()))
+
+    def test_cannot_mix_map_replacement_and_key_patch(self):
+        with self.assertRaises(ValidationError):
+            server(env={}, env_patch={"TOKEN":"value"})
+
+class RemoteHttpConfigTests(unittest.TestCase):
+    def test_remote_http_and_https_services_supported_for_both_transports(self):
+        for transport in ("streamable_http","sse"):
+            for url in ("http://192.0.2.10:8011/api/mcp","https://mcp.example.test/mcp"):
+                with self.subTest(transport=transport,url=url):
+                    config=ServerConfigPatch(id="remote",transport=transport,url=url)
+                    self.assertEqual(config.url,url)

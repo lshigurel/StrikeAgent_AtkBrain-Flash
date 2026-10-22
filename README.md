@@ -194,3 +194,10 @@ Docker 镜像里带了常用探测工具。Linux 实例只保证控制台和 Pi 
 交流群已满。关注公众号「夜安团队SEC」联系拉群。
 
 ![夜安团队SEC 公众号名片](docs/assets/wechat-oa.png)
+
+
+### 每个 Agent 的 Skill 配置
+
+在「Agent 管理」中点击对应角色的「Skill 管理」，可查看仓库已有 skill 的内容，并分别为内置或自定义 agent 选择绑定。勾选「沿用赛道默认」时按红队、CTF 或 SRC 赛道加载默认 skill；取消勾选后可独立选择，清空并保存则不加载任何 skill。
+
+配置保存到 `backend/data/agents.json`，保存后无需重启后端，在下次启动项目会话时生效；运行中的项目保持原配置。点击「新增 Skill」可创建共享 skill，点击「编辑内容」可修改已有 skill。编辑同一个 skill 会影响所有绑定它的 agent，并在下次启动项目会话时生效。新增内容和内置 skill 的修改保存在 `backend/data/skills/`，仓库原始文件与配套资源保留，避免升级覆盖自定义内容。内容需保留 YAML 元信息中的 `description` 用途说明；界面提供新建模板。

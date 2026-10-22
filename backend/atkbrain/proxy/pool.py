@@ -76,7 +76,7 @@ def proxy_allowed_for_objective(obj: str | None) -> bool:
     return normalize_objective(obj) != FLAG
 
 
-def parse_proxy_line(line: str) -> str | None:
+def parse_proxy_line(line: str, *, allow_loopback: bool = False) -> str | None:
     raw = (line or "").strip()
     if not raw or raw.startswith("#"):
         return None
@@ -91,7 +91,10 @@ def parse_proxy_line(line: str) -> str | None:
         host = (urlparse(url).hostname or "").lower()
     except Exception:
         return None
-    if not host or host in _BAD_HOSTS:
+    if not host:
+        return None
+    loopback = host in ("127.0.0.1", "localhost", "::1")
+    if host in _BAD_HOSTS and not (allow_loopback and loopback):
         return None
     return url
 
@@ -172,7 +175,7 @@ class ProxyPool:
         out: list[str] = []
         seen: set[str] = set()
         for line in (self.custom_text or "").splitlines():
-            u = parse_proxy_line(line)
+            u = parse_proxy_line(line, allow_loopback=True)
             if u and u not in seen:
                 seen.add(u)
                 out.append(u)

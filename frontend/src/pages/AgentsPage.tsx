@@ -8,6 +8,7 @@ import {
   type BuiltinAgent,
   type CustomAgent,
 } from "../api";
+import { AgentSkillsModal } from "../features/agents/AgentSkillsModal";
 import { Modal } from "../components/Modal";
 import { useT } from "../i18n";
 
@@ -81,12 +82,14 @@ function BuiltinCard({
   busy,
   t,
   onPatch,
+  onSkills,
 }: {
   agent: BuiltinAgent;
   track: AgentTrack;
   busy: boolean;
   t: (key: string) => string;
   onPatch: (id: string, body: Partial<AgentDraft>) => void;
+  onSkills: () => void;
 }) {
   const [model, setModel] = useState(agent.model);
   useEffect(() => setModel(agent.model), [agent.model]);
@@ -145,6 +148,9 @@ function BuiltinCard({
           </div>
         </dd>
       </dl>
+      <button type="button" className="btn btn-secondary btn-sm" onClick={onSkills} disabled={busy}>
+        {t("skills.manage")}
+      </button>
       <p className="muted" style={{ fontSize: 12, marginBottom: 0 }}>
         {core ? t("agents.coreHint") : t("agents.builtinHint")}
       </p>
@@ -160,12 +166,14 @@ function CustomCard({
   onPatch,
   onEdit,
   onDelete,
+  onSkills,
 }: {
   agent: CustomAgent;
   track: AgentTrack;
   busy: boolean;
   t: (key: string) => string;
   onPatch: (id: string, body: Partial<AgentDraft>) => void;
+  onSkills: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -224,6 +232,9 @@ function CustomCard({
           </div>
         </dd>
       </dl>
+      <button type="button" className="btn btn-secondary btn-sm" onClick={onSkills} disabled={busy}>
+        {t("skills.manage")}
+      </button>
       <div className="row" style={{ gap: 8, marginTop: 12 }}>
         <button type="button" className="btn btn-secondary btn-sm" onClick={onEdit} disabled={busy}>
           {t("common.edit")}
@@ -246,6 +257,7 @@ export function AgentsPage() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [skillsAgent, setSkillsAgent] = useState<BuiltinAgent | CustomAgent | null>(null);
   const [editor, setEditor] = useState<{ mode: "create" | "edit"; draft: AgentDraft } | null>(null);
 
   const load = async () => {
@@ -375,6 +387,7 @@ export function AgentsPage() {
               busy={busy}
               t={t}
               onPatch={(id, body) => { void patch(id, body); }}
+              onSkills={() => setSkillsAgent(agent)}
             />
           ))}
           {customs.map((agent) => (
@@ -385,6 +398,7 @@ export function AgentsPage() {
               busy={busy}
               t={t}
               onPatch={(id, body) => { void patch(id, body); }}
+              onSkills={() => setSkillsAgent(agent)}
               onEdit={() => setEditor({ mode: "edit", draft: { ...agent } })}
               onDelete={() => { void remove(agent.id); }}
             />
@@ -400,6 +414,19 @@ export function AgentsPage() {
         </p>
       ) : null}
 
+      {skillsAgent ? (
+        <AgentSkillsModal
+          agent={skillsAgent}
+          track={track}
+          onClose={() => setSkillsAgent(null)}
+          onSaved={(next) => {
+            setSnap(next);
+            setMessage(t("agents.saved"));
+            setError("");
+            setSkillsAgent(null);
+          }}
+        />
+      ) : null}
       {editor ? (
         <Modal
           wide

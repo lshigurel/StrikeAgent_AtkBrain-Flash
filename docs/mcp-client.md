@@ -1,30 +1,37 @@
 # 外部 MCP 工具
 
-应用后端作为 MCP 客户端，支持 stdio 和 Streamable HTTP。Pi 沿用现有
-agent-tools 通道，向 recon / web-exploit 提供 mcp_list_tools 和 mcp_call_tool。
+应用后端作为 MCP 客户端，支持 stdio、Streamable HTTP 和旧版 SSE。Pi 沿用现有
+agent-tools 通道，向获授权的 lead（主控）、内置或自定义执行 Agent 提供 mcp_list_tools 和 mcp_call_tool。
 无需改模型配置，也无需给 Pi 直连 MCP 的权限。
 
 ## 运行位置
 
 当前本机实例是 WSL 原生 systemd：后端、Pi、stdio 子进程均在 Ubuntu 内。
-命令和工作目录填 Linux 绝对路径，例如 /home/shigure/apps/my-mcp/.venv/bin/python。
+命令可填写 WSL 中的程序名（例如 npx、uvx）或 Linux 绝对路径；参数单独添加。
+程序名按后端进程的 PATH 查找；省略工作目录时使用后端运行用户的主目录。
 Windows 路径和 Windows 环境变量不会自动转成 Linux 路径。
 
 若应用以后放入 Docker，stdio 进程就在容器内，需要把依赖装在容器内。
 WSL 宿主机上的 stdio-only 服务应通过独立 Streamable HTTP 网关接入。
 host 网络下 localhost 指宿主网络；bridge 网络下 localhost 指容器本身。
-当前版本只允许 loopback 明文 HTTP，非 loopback 服务需要 HTTPS。
+HTTP、HTTPS 均可连接填写的 MCP 服务地址；HTTPS 保持证书校验。
 这次验收没有运行 Docker，不能据此推断某个容器网络组合已经兼容。
 
 ## 配置步骤
 
-1. 打开设置页的“外部 MCP 服务”，添加 stdio 或 HTTP 服务。
-2. 保持禁用，填写连接信息并保存。
-3. “测试已保存配置”执行初始化和工具发现；stdio 会启动配置的程序，
-   但不会发送 tools/call。检查返回的名称、说明和 inputSchema。
-4. 审查服务实现，填写工具白名单，选择角色和范围规则，最后启用并保存。
-5. Agent 先 mcp_list_tools，随后按原始 schema 传 arguments 调用 mcp_call_tool。
-   修改配置后重新发现。保存本身不连接服务。
+1. 打开设置页的“外部 MCP 服务”，点击“添加 MCP 服务”或“编辑连接”。
+2. 填写名称，选择本地命令（stdio）、HTTP 或 SSE。
+3. stdio 填命令，逐行添加参数、环境变量；HTTP/SSE 填 URL，逐行添加请求头。
+   可在“表单”和“JSON”之间切换。已保存的密钥不回显，值留空保留，
+   删除对应行才会移除该键；其他未修改的键会保留。
+   JSON 中省略 env/headers 会保留当前草稿；显式填写 {} 才清空对应组。
+4. 在“允许使用的 Agent”中多选 lead（主控）、内置或自定义 Agent。选中的 Agent 可发现并调用
+   该服务提供的全部工具，不需要工具白名单。不选任何 Agent 表示不授权任何 Agent。
+5. 保存后可使用列表中的“测试已保存配置”执行初始化和工具发现；
+   stdio 会启动配置的程序，但不会发送 tools/call。
+6. 列表显示每个服务已授权的 Agent。再次编辑可调整授权；停用或删除的 Agent
+   无法调用，即使历史配置中仍保留其 ID。新连接默认禁用、默认不授权任何 Agent，
+   可在列表中启用。保存本身不连接服务。
 
 stdio 字段示例（请将路径替换为实际安装位置）：
 
@@ -37,7 +44,7 @@ stdio 字段示例（请将路径替换为实际安装位置）：
   "args": ["/home/shigure/apps/my-mcp/server.py"],
   "cwd": "/home/shigure/apps/my-mcp",
   "url": "",
-  "allowed_tools": []
+  "allowed_agents": ["recon", "custom-parser"]
 }
 ```
 
@@ -55,33 +62,31 @@ Streamable HTTP 示例：
   "command": "",
   "args": [],
   "cwd": "",
-  "allowed_tools": []
+  "allowed_agents": ["recon", "web-exploit"]
 }
 ```
 
 认证放在请求头 JSON，例如 {"Authorization":"Bearer ..."}，不能写入 URL。
-仅支持无认证或静态请求头，不支持 OAuth、旧版 SSE、Resources、Prompts。
+HTTP 和 SSE 均支持无认证或静态请求头；SSE 选择相应连接方式并填写服务的 /sse 地址。
+不支持 OAuth、Resources、Prompts。
 普通 REST 工具 API 不能直接当 MCP，需要协议适配。
 测试发现成功只代表协议连通，不代表第三方服务的所有工具都兼容。
 
-## 白名单与目标范围
+## Agent 授权与目标范围
 
-白名单是规则数组。只有 recon / web-exploit 可被授权：
+`allowed_agents` 是服务级的 Agent ID 数组，支持 lead（主控）以及 Agent 管理页中的内置和自定义角色。
+后端在发现和直接调用两处校验授权，不再根据工具名称或旧工具角色规则过滤。
+未获授权的 Agent 不能发现该服务的工具，也不能绕过发现步骤直接调用。
+空数组不授权任何 Agent。lead 默认没有授权，需手动勾选；评审、御主等其他保留角色不能使用外部 MCP。
 
-```json
-[
-  {"name":"parse_text","roles":["recon"],"profile":"pure","target_pointers":[]},
-  {"name":"fetch_url","roles":["recon","web-exploit"],"profile":"http_url","target_pointers":["/url"]}
-]
-```
+旧配置首次读取时，从历史规则中的 roles 合并出服务级授权，避免默认扩大 Agent 范围；
+没有历史规则的服务默认无授权。再次保存会写入 allowed_agents。历史 allowed_tools
+不再作为白名单，也不通过设置接口返回；仅保留已有 http_url 规则的必要目标字段检查，
+避免升级后丢失原有范围限制。只编辑连接的旧客户端会保留已保存的 Agent 授权。
 
-pure 仅用于已审查的无外部 I/O 纯计算工具；它不提供进程沙箱。
-http_url 的 target_pointers 是 RFC6901 JSON Pointer，必须列出所有目标 URL。
-每个目标均执行现有项目 HTTP 范围检查；缺失或越界即拒绝。
-嵌套目标可用 /request/url，数组中的固定位置可用 /targets/0/url。
-不要授权任意命令、任意脚本、隐式目标、可变长度多目标或自行重定向到其他目标的工具。
-应用无法约束第三方程序的内部网络行为，服务必须可信并落实同样的范围限制。
-不要把未知服务列出的工具自动全部加入白名单。
+调用参数中直接提供的 HTTP/HTTPS URL（包括嵌套对象与数组）执行项目 HTTP 范围检查；
+越界或带凭证的 URL 被拒绝。第三方工具内部生成的地址或命令内嵌的目标不属于这一检查
+的覆盖范围，MCP 服务自身仍需落实项目的范围限制。
 
 每项目同一时间一个外部操作；不同项目互相隔离。连接/发现默认 10 秒，
 调用默认 30 秒；另留连接关闭时间。停止项目会取消排队及执行中的调用，
@@ -92,7 +97,7 @@ http_url 的 target_pointers 是 RFC6901 JSON Pointer，必须列出所有目标
 
 配置位于 backend/data/mcp-servers.json，目录 0700、文件 0600。
 GET 只返回 env_keys/header_keys。编辑时留空保留旧值，填写 JSON 替换整组，
-勾选清空或提交 {} 删除整组。不要在命令参数、说明和 URL 中放密钥。
+连接编辑器按键更新，删除一行只删除对应键；旧 API 仍可提交 {} 删除整组。不要在命令参数、说明和 URL 中放密钥。
 两次编辑使用 revision 乐观锁；冲突保留草稿，复制后重新加载并合并。
 
 管理 API 受现有登录保护，路径均相对随机入口的 /api：

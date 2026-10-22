@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import socket
+from pathlib import Path
 
 from .db import db, new_id, now, _dumps, _loads
 from .objective import FLAG, REDTEAM, SRC, normalize_objective
@@ -148,24 +150,52 @@ async def create_single_project(
     return await get_project(pid)
 
 
+def _audit_cluster_rejections(name: str, rejected: list[tuple[str, str]]) -> None:
+    """把被拒绝的集群资产按 JSONL 追加到本地审计日志。"""
+    if not rejected:
+        return
+    path = Path(__file__).resolve().parents[1] / "data" / "logs" / "cluster-rejections.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ts = now()
+    with path.open("a", encoding="utf-8") as fh:
+        for asset, reason in rejected:
+            host, _ = _clean_target(asset)
+            rec = {"ts": ts, "project": name, "asset": asset, "host": host, "reason": reason}
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _format_cluster_rejection(rejected: list[tuple[str, str]]) -> str:
+    details = "；".join(f"{asset} -> {reason}" for asset, reason in rejected[:5])
+    more = f"；另有 {len(rejected) - 5} 条" if len(rejected) > 5 else ""
+    return f"集群资产全部被拒绝：{details}{more}"
+
+
 async def create_cluster_project(name: str, assets: list[str], config: dict | None = None) -> dict:
     """集群项目（Phase 2 深化）：先建父项目并登记资产列表，存活快筛与子项目划分后续进行。"""
     from .cluster import compact_assets_by_host, parse_asset_lines, preferred_host, _normalize_asset
     cleaned: list[str] = []
-    rejected: list[str] = []
+    rejected: list[tuple[str, str]] = []
     for raw in parse_asset_lines(assets):
         try:
             assert_safe_project_target(raw)
-        except ValueError:
-            rejected.append(raw)
+        except ValueError as exc:
+            rejected.append((raw, str(exc)))
             continue
         cleaned.append(raw)
     cleaned, _duped = compact_assets_by_host(cleaned)
+    if rejected:
+        try:
+            await asyncio.to_thread(_audit_cluster_rejections, name, rejected)
+        except OSError as exc:
+            print(f"[cluster-audit] 写审计日志失败：{exc}", flush=True)
     if not cleaned:
-        raise ValueError(
-            "集群资产均为本机/回环/Fake-IP，已全部拒绝"
-            + (f"：{rejected[:5]}" if rejected else "")
-        )
+        if not rejected:
+            raise ValueError("集群资产为空或没有可用资产")
+        raise ValueError(_format_cluster_rejection(rejected))
     pid = new_id("p_")
     ts = now()
     hosts: list[str] = []
@@ -179,7 +209,10 @@ async def create_cluster_project(name: str, assets: list[str], config: dict | No
     scope = Scope(targets=hosts or [a.lower() for a in cleaned], mode="strict")
     cfg = {**(config or {}), "assets": cleaned}
     if rejected:
-        cfg["assets_rejected"] = rejected
+        cfg["assets_rejected"] = [asset for asset, _reason in rejected]
+        cfg["assets_rejected_detail"] = [
+            {"asset": asset, "reason": reason} for asset, reason in rejected
+        ]
     await db.execute(
         """INSERT INTO projects(id, name, kind, target, ports, scope, config, status, parent_id, created_at, updated_at)
            VALUES(?,?,?,?,?,?,?,?,?,?,?)""",

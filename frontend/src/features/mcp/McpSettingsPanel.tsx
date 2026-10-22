@@ -1,100 +1,113 @@
 import { useEffect, useState } from "react";
 import { useT } from "../../i18n";
+import { Modal } from "../../components/Modal";
+import { api } from "../../api";
 import { getMcpConfig, saveMcpConfig, testMcpServer } from "./api";
-import type { PublicMcpConfig, PublicServerConfig, ServerPatch, McpTestResult } from "./types";
+import { McpConnectionEditor } from "./McpConnectionEditor";
+import { connectionDraft, connectionPatch } from "./connection";
+import type { ConnectionDraft } from "./connection";
+import type { PublicMcpConfig, PublicServerConfig, ServerPatch, McpTestResult, McpAgentOption } from "./types";
 
-type Draft = PublicServerConfig & { key:number; savedId?:string; argsText:string; rulesText:string; envText:string; headersText:string; clearEnv:boolean; clearHeaders:boolean };
-let nextKey=0;
-function draft(s:PublicServerConfig,saved=true):Draft {
-  return {...s,key:nextKey++,savedId:saved?s.id:undefined,argsText:JSON.stringify(s.args,null,2),rulesText:JSON.stringify(s.allowed_tools,null,2),
-    envText:"",headersText:"",clearEnv:false,clearHeaders:false};
-}
-function object(value:unknown):value is Record<string,unknown> { return !!value && typeof value==="object" && !Array.isArray(value); }
-function secret(text:string):Record<string,string> {
-  const v:unknown=JSON.parse(text);
-  if(!object(v)||Object.values(v).some(x=>typeof x!=="string")) throw new Error("invalid");
-  return v as Record<string,string>;
-}
-function patch(d:Draft):ServerPatch {
-  const args:unknown=JSON.parse(d.argsText),rules:unknown=JSON.parse(d.rulesText);
-  if(!Array.isArray(args)||args.some(x=>typeof x!=="string")||!Array.isArray(rules)) throw new Error("invalid");
-  for(const r of rules) {
-    if(!object(r)||typeof r.name!=="string"||!r.name||!Array.isArray(r.roles)||!r.roles.length||
-      r.roles.some((x:unknown)=>x!=="recon"&&x!=="web-exploit")||!["pure","http_url"].includes(String(r.profile))||
-      !Array.isArray(r.target_pointers)||r.target_pointers.some((x:unknown)=>typeof x!=="string"||!x.startsWith("/"))||
-      (r.profile==="http_url"&&!r.target_pointers.length)) throw new Error("invalid");
-  }
-  const out:ServerPatch={id:d.id,enabled:d.enabled,transport:d.transport,command:d.command,cwd:d.cwd,url:d.url,args:args as string[],allowed_tools:rules as ServerPatch["allowed_tools"]};
-  if(d.clearEnv)out.env={}; else if(d.envText.trim())out.env=secret(d.envText);
-  if(d.clearHeaders)out.headers={}; else if(d.headersText.trim())out.headers=secret(d.headersText);
-  return out;
+function savedPatch(server:PublicServerConfig):ServerPatch {
+  const {env_keys,header_keys,...fields}=server;
+  return fields;
 }
 export function McpSettingsPanel() {
   const {t}=useT();
-  const [rows,setRows]=useState<Draft[]>([]),[revision,setRevision]=useState<number|null>(null);
-  const [busy,setBusy]=useState(false),[message,setMessage]=useState(""),[results,setResults]=useState<Record<number,McpTestResult>>({});
-  function accept(c:PublicMcpConfig) { setRevision(c.revision);setRows(c.servers.map(s=>draft(s)));setResults({}); }
-  function failure(e:unknown) { setMessage(e instanceof Error&&e.message.includes("mcp_config_changed")?t("mcp.conflict"):t("mcp.failed")); }
-  async function reload() { setBusy(true);try{accept(await getMcpConfig());setMessage("");}catch(e){failure(e);}finally{setBusy(false);} }
+  const [config,setConfig]=useState<PublicMcpConfig|null>(null);
+  const [agents,setAgents]=useState<McpAgentOption[]>([]);
+  const [editor,setEditor]=useState<ConnectionDraft|null>(null);
+  const [busy,setBusy]=useState(false),[message,setMessage]=useState("");
+  const [dialogMessage,setDialogMessage]=useState("");
+  const [results,setResults]=useState<Record<string,McpTestResult>>({});
+  function failure(e:unknown) {
+    const detail=e instanceof Error?e.message:"";
+    if(detail.includes("mcp_config_changed"))return t("mcp.conflict");
+    if(detail.includes("invalid_mcp_config"))return t("mcp.connectionInvalid");
+    return t("mcp.failed");
+  }
+  async function reload() {
+    setBusy(true);
+    try{
+      const [next,catalog]=await Promise.all([getMcpConfig(),api.listAgents()]);
+      setConfig(next);
+      setAgents([{id:"lead",enabled:true},...catalog.builtin.map(a=>({id:a.id,enabled:a.enabled})),
+        ...catalog.custom.map(a=>({id:a.id,enabled:a.enabled,custom:true}))]);
+      setResults({});setMessage("");
+    }
+    catch(e){setMessage(failure(e));}
+    finally{setBusy(false);}
+  }
   useEffect(()=>{void reload();},[]);
-  function update(key:number,values:Partial<Draft>) { setRows(old=>old.map(r=>r.key===key?{...r,...values}:r)); }
-  function add(transport:Draft["transport"]) {
-    let n=1;while(rows.some(r=>r.id==="server-"+n))n++;
-    setRows(old=>[...old,draft({id:"server-"+n,enabled:false,transport,command:"",cwd:"",url:"",args:[],allowed_tools:[],env_keys:[],header_keys:[]},false)]);
+  function edit(server?:PublicServerConfig) {
+    if(!config)return;
+    let next=1;while(config.servers.some(s=>s.id==="server-"+next))next++;
+    const draft=connectionDraft(server??{id:"server-"+next,enabled:false,transport:"stdio",
+      command:"",cwd:"",url:"",args:[],allowed_agents:[],env_keys:[],header_keys:[]});
+    if(!server)draft.name="";
+    setEditor(draft);setDialogMessage("");
   }
-  async function save() {
-    let servers:ServerPatch[];
-    try{servers=rows.map(patch);}catch{setMessage(t("mcp.invalid"));return;}
-    if(revision===null)return;
+  async function persist(servers:ServerPatch[],closeEditor=false) {
+    if(!config)return;
     setBusy(true);
-    try { accept(await saveMcpConfig({revision,servers}));setMessage(t("mcp.saved")); }
-    catch(e){failure(e);}finally{setBusy(false);}
+    try {
+      setConfig(await saveMcpConfig({revision:config.revision,servers}));
+      setResults({});setMessage(t("mcp.saved"));
+      if(closeEditor)setEditor(null);
+    } catch(e) {if(closeEditor)setDialogMessage(failure(e));else setMessage(failure(e));}
+    finally{setBusy(false);}
   }
-  async function test(row:Draft) {
-    if(!row.savedId)return;
+  function saveEditor() {
+    if(!editor||!config)return;
+    let patch:ServerPatch;
+    try{patch=connectionPatch(editor);}catch{setDialogMessage(t("mcp.connectionInvalid"));return;}
+    const exists=config.servers.some(s=>s.id===patch.id);
+    const servers=config.servers.map(s=>s.id===patch.id?patch:savedPatch(s));
+    if(!exists)servers.push(patch);
+    void persist(servers,true);
+  }
+  async function test(server:PublicServerConfig) {
     setBusy(true);
-    try{const result=await testMcpServer(row.savedId);setResults(old=>({...old,[row.key]:result}));}
-    catch(e){failure(e);}finally{setBusy(false);}
+    try{const result=await testMcpServer(server.id);setResults(old=>({...old,[server.id]:result}));}
+    catch(e){setMessage(failure(e));}
+    finally{setBusy(false);}
   }
   return <section className="card-cream" style={{gridColumn:"1 / -1"}}>
-    <h3>{t("mcp.title")}</h3><p className="muted">{t("mcp.hint")}</p>
+    <h3>{t("mcp.title")}</h3><p className="muted">{t("mcp.connectionHint")}</p>
     {message&&<p role="status">{message}</p>}
     <fieldset disabled={busy} style={{border:0,padding:0,minWidth:0}}>
-      {revision===null?<p>{t("common.loading")}</p>:rows.length===0?<p>{t("mcp.empty")}</p>:null}
-      {rows.map(row=><div key={row.key} data-testid="mcp-server" style={{borderTop:"1px solid #9995",padding:"18px 0"}}>
-        <div style={{display:"flex",gap:16,alignItems:"center",flexWrap:"wrap"}}>
-          <label className="login-field"><span>{t("mcp.id")}</span><input className="input" value={row.id} onChange={e=>update(row.key,{id:e.target.value})}/></label>
-          <strong>{row.transport==="stdio"?"stdio":"Streamable HTTP"}</strong>
-          <label><input type="checkbox" checked={row.enabled} onChange={e=>update(row.key,{enabled:e.target.checked})}/>{t("mcp.enabled")}</label>
-          <button type="button" className="btn" onClick={()=>setRows(old=>old.filter(r=>r.key!==row.key))}>{t("mcp.delete")}</button>
+      {!config?<p>{t("common.loading")}</p>:!config.servers.length?<p>{t("mcp.empty")}</p>:null}
+      {config?.servers.map(server=><div key={server.id} data-testid="mcp-server">
+        <div className="mcp-server-summary">
+          <strong className="mcp-server-title">{server.name||server.id}</strong>
+          <span className="muted">{server.transport==="stdio"?"stdio":server.transport==="sse"?"SSE":"HTTP"}</span>
+          <span className="muted mcp-grants-summary">{t("mcp.allowedAgents")}: {server.allowed_agents?.join(", ")||t("mcp.noAgents")}</span>
+          <label><input type="checkbox" aria-label={t("mcp.enabled")} checked={server.enabled}
+            onChange={e=>void persist(config.servers.map(s=>({...savedPatch(s),enabled:s.id===server.id?e.target.checked:s.enabled})))}/>{t("mcp.enabled")}</label>
+          <button type="button" className="btn" onClick={()=>edit(server)}>{t("mcp.edit")}</button>
+          <button type="button" className="btn" onClick={()=>void test(server)}>{t("mcp.test")}</button>
+          <button type="button" className="btn" onClick={()=>void persist(config.servers.filter(s=>s.id!==server.id).map(savedPatch))}>{t("mcp.delete")}</button>
         </div>
-        {row.transport==="stdio"?<>
-          <label className="login-field"><span>{t("mcp.command")}</span><input className="input" value={row.command} onChange={e=>update(row.key,{command:e.target.value})}/></label>
-          <label className="login-field"><span>{t("mcp.cwd")}</span><input className="input" value={row.cwd} onChange={e=>update(row.key,{cwd:e.target.value})}/></label>
-          <label className="login-field"><span>{t("mcp.args")}</span><textarea className="input" rows={2} value={row.argsText} onChange={e=>update(row.key,{argsText:e.target.value})}/></label>
-        </>:<label className="login-field"><span>{t("mcp.url")}</span><input className="input" value={row.url} onChange={e=>update(row.key,{url:e.target.value})}/></label>}
-        <label className="login-field"><span>{t("mcp.rules")}</span><textarea className="input" rows={5} value={row.rulesText} onChange={e=>update(row.key,{rulesText:e.target.value})}/></label>
-        <p className="muted">{t("mcp.ruleHint")}</p>
-        <code style={{overflowWrap:"anywhere"}}>{'{"name":"echo","roles":["recon"],"profile":"pure","target_pointers":[]}'}</code>
-        {(["env","headers"] as const).map(kind=>{
-          const env=kind==="env",value=env?row.envText:row.headersText,clear=env?row.clearEnv:row.clearHeaders;
-          if((env&&row.transport!=="stdio")||(!env&&row.transport!=="streamable_http"))return null;
-          return <div key={kind}><p className="muted">{t("mcp.secretHint")} {(env?row.env_keys:row.header_keys).join(", ")||"—"}</p>
-            <label className="login-field"><span>{t(env?"mcp.env":"mcp.headers")}</span><textarea className="input" rows={2} autoComplete="off" spellCheck={false} disabled={clear} value={value} onChange={e=>update(row.key,env?{envText:e.target.value}:{headersText:e.target.value})}/></label>
-            <label><input type="checkbox" checked={clear} onChange={e=>update(row.key,env?{clearEnv:e.target.checked}:{clearHeaders:e.target.checked})}/>{t(env?"mcp.clearEnv":"mcp.clearHeaders")}</label>
-          </div>;
-        })}
-        <p className="muted">{t("mcp.testHint")}</p>
-        <button type="button" className="btn" disabled={!row.savedId} onClick={()=>void test(row)}>{t("mcp.test")}</button>
-        {results[row.key]&&<pre style={{whiteSpace:"pre-wrap",overflowWrap:"anywhere",maxHeight:300,overflow:"auto"}}>{JSON.stringify(results[row.key],null,2)}</pre>}
+        {results[server.id]&&<pre style={{whiteSpace:"pre-wrap",overflowWrap:"anywhere",maxHeight:300,overflow:"auto"}}>{JSON.stringify(results[server.id],null,2)}</pre>}
       </div>)}
       <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:16}}>
-        <button type="button" className="btn" disabled={revision===null} onClick={()=>add("stdio")}>{t("mcp.addStdio")}</button>
-        <button type="button" className="btn" disabled={revision===null} onClick={()=>add("streamable_http")}>{t("mcp.addHttp")}</button>
-        <button type="button" className="btn btn-primary" disabled={revision===null} onClick={()=>void save()}>{t("mcp.save")}</button>
+        <button type="button" className="btn btn-primary" disabled={!config} onClick={()=>edit()}>{t("mcp.add")}</button>
         <button type="button" className="btn" onClick={()=>void reload()}>{t("mcp.reload")}</button>
       </div>
     </fieldset>
+    {editor&&<Modal bare className="mcp-dialog" onClose={()=>{if(!busy)setEditor(null);}}>
+      <div className="mcp-dialog-header">
+        <h3>{t("mcp.title")}</h3>
+        <button type="button" className="btn btn-ghost" aria-label={t("common.close")} disabled={busy} onClick={()=>setEditor(null)}>×</button>
+      </div>
+      <fieldset disabled={busy} style={{border:0,padding:0,margin:0,minWidth:0}}>
+        <McpConnectionEditor draft={editor} agents={agents} onChange={draft=>{setEditor(draft);setDialogMessage("");}}/>
+        {dialogMessage&&<p role="alert" className="mcp-dialog-message">{dialogMessage}</p>}
+        <div className="mcp-dialog-footer">
+          <button type="button" className="btn" onClick={()=>setEditor(null)}>{t("common.cancel")}</button>
+          <button type="button" className="btn btn-primary" onClick={saveEditor}>{busy?t("common.saving"):t("mcp.save")}</button>
+        </div>
+      </fieldset>
+    </Modal>}
   </section>;
 }
-

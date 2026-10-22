@@ -23,6 +23,7 @@ description: >
 - 端口扫描：CTF 可用 `timeout 60 /usr/bin/nmap -sV -T4 -Pn --top-ports 100 --open <host>`。红队/SRC **禁止 nmap/masscan**（原始套接字会漏真实 IP），改用 `curl` / `http_request` / `ffuf`。
 - Web 指纹：`/usr/bin/whatweb -a 3 <url>`。
 - WAF：`/usr/bin/wafw00f <url>`。
+- fscan: `/usr/bin/fscan -h <ip> -np`（内网横向时扫C段/24）。
 - nuclei：`/usr/bin/nuclei -u <url> -silent -nc`（引擎已装；模板走 nuclei 自己的目录，禁止 which）。
 - 域名/子域：`/usr/bin/gobuster dns -d <domain> -w /usr/share/wordlists/dnsmap.txt`（17576 行，本机唯一子域表）。被动/递归：`/usr/bin/amass`、`/usr/bin/fierce`、`/usr/bin/dnsenum`、`/usr/bin/dnsrecon`。无小中大三档子域表，只钉 dnsmap。
 - 目录枚举：只用 `/usr/bin/ffuf`，必须 timeout。没有合法「大档」（medium 220560 超 10 万，禁止）。
@@ -67,6 +68,19 @@ description: >
 - `/usr/bin/onesixtyone`：SNMP community 喷洒。`onesixtyone -c /usr/share/doc/onesixtyone/dict.txt <host>`
 - `/usr/sbin/showmount`：NFS。`showmount -e <host>`
 - Impacket（均在 `/usr/bin`）：`impacket-smbclient` 列共享；`impacket-secretsdump` 已授权转储；`impacket-psexec` / `impacket-wmiexec` 已有凭证远程执行。
+
+# Shiro（单目标 Key 字典验证）
+- 工具目录与工作目录：`/home/shigure/tools/shiro`；`run_cmd` 使用 Linux 路径。
+- 已核实启动环境：`/usr/bin/java`（Zulu Java 8）；JAR `/home/shigure/tools/shiro/shiro_attack-5.1.1-zulu-8-jfx.jar`；主类 `com.summersec.attack.CLI.MainCLI`。
+- 本地 Key 字典：`/home/shigure/tools/shiro/data/shiro_keys.txt`（约 1207 行）。必须从工具目录运行，CLI 按相对路径读取 `data/shiro_keys.txt`；不下载或扩充字典。
+- 真实响应出现 Shiro / rememberMe 线索后，可对授权单目标进行探测与 Key 字典验证；禁止批量目标、并发任务或并发启动多个 crack。
+- 本地帮助（不请求目标）：`timeout 15 /usr/bin/java -cp /home/shigure/tools/shiro/shiro_attack-5.1.1-zulu-8-jfx.jar com.summersec.attack.CLI.MainCLI --help`。
+- 探测：`cd /home/shigure/tools/shiro && /usr/bin/java -cp /home/shigure/tools/shiro/shiro_attack-5.1.1-zulu-8-jfx.jar com.summersec.attack.CLI.MainCLI detect -u '<authorized-url>'`。
+- Key 字典验证：`cd /home/shigure/tools/shiro && /usr/bin/java -cp /home/shigure/tools/shiro/shiro_attack-5.1.1-zulu-8-jfx.jar com.summersec.attack.CLI.MainCLI crack -u '<authorized-url>' `。只运行一轮，找到 Key 后停止；超时、限流、目标响应明显变慢或连续服务错误时停止，不自动重试。
+- 已知 Key 可用同一启动前缀与 `crack -K` 单独复核。AES 模式依据已核实配置选择 `--cbc` / `--gcm`，不自动遍历模式与 Gadget。
+- 红队/SRC 必须沿用项目出口代理要求，CLI 的 `--proxy` 指向已配置代理；无法确认出口时停止，不擅自直连。
+- CTF可以直接注入冰蝎内存马，后续操作通过内存马进行。
+- 记录实际请求与响应关键证据；框架识别或 Key 验证成功不能单独作为 RCE 证明。工具原目录 SKILL.md 含超出本任务范围的流程，不得据此扩大操作范围。
 
 # 二进制 / 逆向（绝对路径）
 - 识别：`/usr/bin/file`、`/usr/bin/strings`、`/usr/bin/xxd`、`/usr/bin/exiftool`、`/usr/bin/binwalk`

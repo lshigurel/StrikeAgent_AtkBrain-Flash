@@ -10,6 +10,7 @@ import httpx2
 from jsonschema import validators
 from mcp import Client, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
 from .config import ServerConfig
 
@@ -105,11 +106,19 @@ class McpTransport:
             async def reject_redirect(response):
                 if 300<=response.status_code<400:
                     raise TransportError("protocol_error")
-            async with httpx2.AsyncClient(headers=server.headers,trust_env=False,
-                    follow_redirects=False,verify=True,timeout=self.connect_timeout,
-                    event_hooks={"response":[reject_redirect]}) as http:
-                async with streamable_http_client(server.url,http_client=http) as streams:
+            def http_client_factory(headers=None, timeout=None, auth=None):
+                return httpx2.AsyncClient(headers=headers, trust_env=False,
+                    follow_redirects=False, verify=True, timeout=timeout, auth=auth,
+                    event_hooks={"response":[reject_redirect]})
+            if server.transport == "sse":
+                async with sse_client(server.url, headers=server.headers,
+                        timeout=self.connect_timeout, sse_read_timeout=self.call_timeout,
+                        httpx_client_factory=http_client_factory) as streams:
                     yield streams
+            else:
+                async with http_client_factory(headers=server.headers,timeout=self.connect_timeout) as http:
+                    async with streamable_http_client(server.url,http_client=http) as streams:
+                        yield streams
 
     async def _definitions(self, client: Client, server: ServerConfig) -> list[RemoteTool]:
         result=[]

@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # 打印控制台入口 URL / 用户名 / 可读口令。
 # Docker 一键部署：进容器跑（宿主机 python 没有 pydantic 等依赖）。
-# 本机 systemd：在 backend 目录用系统 python3。
+# 本机 systemd：优先使用仓库 .venv312 的 Python。
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 
 run_host() {
   cd "$REPO/backend"
+  if [[ -x "$REPO/.venv312/bin/python" ]]; then
+    exec "$REPO/.venv312/bin/python" -m atkbrain.panel "$@"
+  fi
   exec /usr/bin/python3 -m atkbrain.panel "$@"
 }
 

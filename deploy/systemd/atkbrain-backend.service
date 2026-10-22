@@ -7,17 +7,21 @@ StartLimitBurst=10
 
 [Service]
 Type=simple
+User=root
+Group=root
 WorkingDirectory=__REPO__/backend
+EnvironmentFile=__REPO__/.env
 Environment=PYTHONUNBUFFERED=1
+Environment=DISPLAY=:0
 Environment=HOME=/root
-Environment=ATKBRAIN_HOST=0.0.0.0
+Environment=ATKBRAIN_HOST=127.0.0.1
 Environment=ATKBRAIN_PORT=2333
 Environment=ATKBRAIN_FRONTEND_PORT=2334
 Environment=ATKBRAIN_FORCE_HTTPS=true
-Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/.local/bin
+Environment=PATH=__NODE_BIN__:__REPO__/.runtime/pi/node_modules/.bin:/root/.local/bin:/usr/local/sbin:/usr/local/bin:__REPO__/.venv312/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=-__REPO__/backend/data/atkbrain-claude.env
 ExecStartPre=/bin/mkdir -p __REPO__/backend/data/logs
-ExecStart=/usr/bin/python3 -m atkbrain.main
+ExecStart=__REPO__/.venv312/bin/python -m atkbrain.main
 Restart=always
 RestartSec=3
 TimeoutStopSec=40

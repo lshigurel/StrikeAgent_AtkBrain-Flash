@@ -6,7 +6,7 @@ import time
 from collections import defaultdict
 from urllib.parse import urlsplit
 from ..events import emit
-from .config import ConfigStore, ROLES
+from .config import ConfigStore, agent_enabled
 from .transport import McpTransport, TransportError
 
 # Large MCP servers (for example HexStrike's 150 tools) need a larger catalog
@@ -22,6 +22,16 @@ def pointer(data: object, path: str):
         data=data[int(key)] if isinstance(data,list) else data[key]
     return data
 
+def argument_urls(data: object):
+    if isinstance(data, dict):
+        for value in data.values():
+            yield from argument_urls(value)
+    elif isinstance(data, list):
+        for value in data:
+            yield from argument_urls(value)
+    elif isinstance(data, str) and data.strip().lower().startswith(("http:", "https:")):
+        yield data.strip()
+
 class McpBridge:
     def __init__(self, store: ConfigStore, transport: McpTransport, is_running):
         self.store=store
@@ -35,7 +45,7 @@ class McpBridge:
         self._stopped.discard(project_id)
 
     def _allowed(self, ctx, role):
-        return role in ROLES and ctx.project_id not in self._stopped and self.is_running(ctx.project_id)
+        return agent_enabled(role) and ctx.project_id not in self._stopped and self.is_running(ctx.project_id)
 
     async def _owned(self, pid, operation):
         task=asyncio.create_task(operation())
@@ -57,21 +67,21 @@ class McpBridge:
                     return response("Project or configuration changed; discover again","denied")
                 for server in config.servers:
                     if server_id and server.id!=server_id: continue
-                    rules={r.name:r for r in server.allowed_tools if role in r.roles}
-                    if not server.enabled or not rules: continue
+                    if not server.enabled or role not in server.allowed_agents: continue
                     if not self._allowed(ctx,role): return response("Project stopped","denied")
                     try:
                         tools=await self.transport.describe(server)
+                        if not self._allowed(ctx,role) or self.store.load().revision!=config.revision:
+                            return response("Project or configuration changed; discover again","denied")
                         for tool in tools:
-                            if tool.name in rules:
-                                results.append({"server_id":server.id,"name":tool.name,
-                                    "description":tool.description,"inputSchema":tool.input_schema})
+                            results.append({"server_id":server.id,"name":tool.name,
+                                "description":tool.description,"inputSchema":tool.input_schema})
                     except TransportError as error:
                         results.append({"server_id":server.id,"error_code":error.code})
             # Discovery schemas must remain complete; reject oversize rather than truncate JSON.
             raw=json.dumps({"tools":results},ensure_ascii=False)
             if len(raw.encode())>MAX_CATALOG_BYTES:
-                return response("Tool catalog too large; select one server and narrow its allowlist","catalog_too_large")
+                return response("Tool catalog too large; select one server with server_id","catalog_too_large")
             return response(raw)
         return await self._owned(ctx.project_id,operation)
 
@@ -79,10 +89,11 @@ class McpBridge:
         if not self._allowed(ctx,role) or not isinstance(arguments,dict):
             return response("MCP access denied","denied")
         config=self.store.load()
-        server=next((s for s in config.servers if s.id==server_id and s.enabled),None)
-        rule=next((r for r in server.allowed_tools if r.name==tool_name and role in r.roles),None) if server else None
-        if not rule: return response("Server or tool is not allowed","denied")
-        if rule.profile=="http_url":
+        server=next((s for s in config.servers if s.id==server_id and s.enabled and role in s.allowed_agents),None)
+        if not server or not isinstance(tool_name,str) or not tool_name.strip():
+            return response("Server is not allowed or tool name is invalid","denied")
+        rule=next((r for r in server.allowed_tools if r.name==tool_name and r.profile=="http_url"),None)
+        if rule:
             try:
                 for path in rule.target_pointers:
                     target=pointer(arguments,path)
@@ -91,6 +102,13 @@ class McpBridge:
                         or parsed.username or parsed.password or ctx._http_blocked(target)):
                         return response("Target is outside the project scope","denied")
             except (ValueError,TypeError,KeyError,IndexError,AttributeError):
+                return response("Required target is missing or invalid","denied")
+        for target in argument_urls(arguments):
+            try:
+                parsed=urlsplit(target)
+                if not parsed.hostname or parsed.username or parsed.password or ctx._http_blocked(target):
+                    return response("Target is outside the project scope","denied")
+            except (ValueError,TypeError,AttributeError):
                 return response("Required target is missing or invalid","denied")
         async def operation():
             async with self._locks.setdefault(ctx.project_id,asyncio.Lock()):

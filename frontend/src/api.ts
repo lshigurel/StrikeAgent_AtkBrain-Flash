@@ -57,6 +57,11 @@ export type LlmTestResult = {
   error?: string;
 };
 
+export type AgentSkillCatalog = {
+  skills: { name: string; content: string; revision?: string; source?: "builtin" | "custom" | "override" }[];
+  defaults: Record<AgentTrack, string[]>;
+};
+
 export type AgentTrack = "redteam" | "flag" | "src";
 
 export type BuiltinAgent = {
@@ -66,10 +71,12 @@ export type BuiltinAgent = {
   enabled: boolean;
   default: boolean;
   model: string;
+  skills?: string[] | null;
   descriptions: Partial<Record<AgentTrack, string>>;
 };
 
 export type CustomAgent = {
+  skills?: string[] | null;
   id: string;
   description: string;
   prompt: string;
@@ -86,6 +93,7 @@ export type AgentsSnapshot = {
 };
 
 export type AgentDraft = {
+  skills?: string[] | null;
   id?: string;
   description: string;
   prompt: string;
@@ -295,6 +303,11 @@ export const api = {
   testLlmProfile: (body: LlmProfileInput) =>
     req<LlmTestResult>("/api/settings/llm/test", { method: "POST", headers: J, body: JSON.stringify(body) }),
   listAgents: () => req<AgentsSnapshot>("/api/agents"),
+  listAgentSkills: () => req<AgentSkillCatalog>("/api/agent-skills"),
+  createAgentSkill: (body: { name: string; content: string }) =>
+    req<AgentSkillCatalog>("/api/agent-skills", { method: "POST", headers: J, body: JSON.stringify(body) }),
+  updateAgentSkill: (name: string, body: { content: string; revision: string }) =>
+    req<AgentSkillCatalog>(`/api/agent-skills/${encodeURIComponent(name)}`, { method: "PUT", headers: J, body: JSON.stringify(body) }),
   createAgent: (body: AgentDraft & { id: string }) =>
     req<AgentsSnapshot>("/api/agents", { method: "POST", headers: J, body: JSON.stringify(body) }),
   patchAgent: (id: string, body: Partial<AgentDraft>) =>

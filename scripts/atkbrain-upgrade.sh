@@ -1,20 +1,28 @@
-"""把本机源码升到指定 GitHub tag，然后按部署方式重启。
-
-用法: scripts/atkbrain-upgrade.sh <tag>
-不碰 backend/data、*.env、node_modules。不改 git config、不 force push。
-"""
+#!/usr/bin/env bash
+# 把本机源码升到指定 GitHub tag，然后按部署方式重启。
+# 用法: scripts/atkbrain-upgrade.sh <tag>
+# 不碰 backend/data、*.env、node_modules。不改 git config、不 force push。
 set -euo pipefail
 
 TAG="${1:-}"
 [[ "$TAG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "error: 非法 tag: ${TAG}" >&2; exit 1; }
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+VENV="$REPO/.venv312"
+PY="$VENV/bin/python"
 SLUG="${ATKBRAIN_GITHUB_REPO:-Yean-Sec/StrikeAgent_AtkBrain-Flash}"
 SLUG="${SLUG#https://github.com/}"
 SLUG="${SLUG#http://github.com/}"
 SLUG="${SLUG%.git}"
 LOG_DIR="$REPO/backend/data/logs"
 mkdir -p "$LOG_DIR"
+
+NODE_BIN="$(find "$REPO/.runtime" -maxdepth 4 -type f -name node -perm -u+x 2>/dev/null | head -n 1)"
+if [[ -n "$NODE_BIN" ]]; then
+  export PATH="$(dirname "$NODE_BIN"):$REPO/.runtime/pi/node_modules/.bin:$VENV/bin:$PATH"
+else
+  export PATH="$VENV/bin:$PATH"
+fi
 
 IN_DOCKER=0
 if [[ -f /.dockerenv ]]; then
@@ -81,10 +89,14 @@ LOCK_AFTER="$(hash_of "$REPO/frontend/package-lock.json")"
 PKG_AFTER="$(hash_of "$REPO/frontend/package.json")"
 
 pip_install() {
-  if [[ -x /opt/atkbrain/venv/bin/pip ]]; then
+  if [[ -x "$VENV/bin/python" ]]; then
+    echo "[*] 安装到 $VENV"
+    "$VENV/bin/python" -m pip install -r "$REPO/backend/requirements.txt"
+  elif [[ -x /opt/atkbrain/venv/bin/pip ]]; then
     /opt/atkbrain/venv/bin/pip install -r "$REPO/backend/requirements.txt"
   else
-    /usr/bin/python3 -m pip install -r "$REPO/backend/requirements.txt"
+    echo "error: 找不到 $VENV/bin/python 或 /opt/atkbrain/venv/bin/pip" >&2
+    exit 1
   fi
 }
 
@@ -94,12 +106,14 @@ if [[ -n "$REQ_AFTER" && "$REQ_AFTER" != "$REQ_BEFORE" ]]; then
 fi
 if [[ ("$LOCK_AFTER" != "$LOCK_BEFORE" || "$PKG_AFTER" != "$PKG_BEFORE") && -d "$REPO/frontend" ]]; then
   echo "[*] frontend 依赖有变，npm install"
+  command -v npm >/dev/null || { echo "error: 找不到 npm" >&2; exit 1; }
   (cd "$REPO/frontend" && npm install)
 fi
 
 if [[ "$IN_DOCKER" -eq 1 ]]; then
   if [[ -f "$REPO/frontend/package.json" ]]; then
     echo "[*] 容器内编前端"
+    command -v npm >/dev/null || { echo "error: 找不到 npm" >&2; exit 1; }
     (cd "$REPO/frontend" && npm install && npx vite build)
   fi
   echo "[*] 重启控制台进程"
@@ -113,8 +127,17 @@ if [[ "$IN_DOCKER" -eq 1 ]]; then
 fi
 
 if systemctl cat atkbrain-flash-backend.service >/dev/null 2>&1; then
-  echo "[*] 重启 systemd"
-  systemctl restart atkbrain-flash-backend.service atkbrain-flash-frontend.service
+  echo "[*] 重新渲染 unit 并重启 systemd"
+  if [[ -x "$REPO/scripts/atkbrain-backend.sh" ]]; then
+    "$REPO/scripts/atkbrain-backend.sh" restart
+  else
+    systemctl restart atkbrain-flash-backend.service
+  fi
+  if [[ -x "$REPO/scripts/atkbrain-frontend.sh" ]]; then
+    "$REPO/scripts/atkbrain-frontend.sh" restart
+  else
+    systemctl restart atkbrain-flash-frontend.service
+  fi
 elif [[ -f "$REPO/compose.yaml" ]] && command -v docker >/dev/null 2>&1; then
   echo "[*] docker compose 重建镜像"
   extra=()

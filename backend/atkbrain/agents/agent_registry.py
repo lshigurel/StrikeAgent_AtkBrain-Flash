@@ -15,6 +15,7 @@ from typing import Any
 
 from ..config import settings
 from ..objective import normalize_objective
+from .project_skills import validate_skill_selection
 
 VERSION = 1
 MAX_PROMPT = 60_000
@@ -163,6 +164,7 @@ class AgentStore:
             "enabled": enabled,
             "default": default,
             "model": _clean_text(raw.get("model"), MAX_MODEL),
+            "skills": raw.get("skills"),
         }
 
     def update_builtin(self, role: str, **fields: Any) -> None:
@@ -182,6 +184,8 @@ class AgentStore:
                 cur["default"] = bool(fields["default"])
             if "model" in fields and fields["model"] is not None:
                 cur["model"] = _clean_text(fields["model"], MAX_MODEL)
+            if "skills" in fields:
+                cur["skills"] = validate_skill_selection(fields["skills"])
             data["builtin"][role] = cur
             self._save(data)
 
@@ -204,7 +208,9 @@ class AgentStore:
         enabled: bool = True,
         default: bool = False,
         model: str = "",
+        skills: list[str] | None = None,
     ) -> dict[str, Any]:
+        skills = validate_skill_selection(skills)
         aid = _validate_id(agent_id)
         desc = _clean_text(description, MAX_DESCRIPTION)
         body = _clean_text(prompt, MAX_PROMPT)
@@ -227,6 +233,7 @@ class AgentStore:
                 "enabled": bool(enabled),
                 "default": bool(default),
                 "model": _clean_text(model, MAX_MODEL),
+                "skills": skills,
                 "created_at": time.time(),
                 "updated_at": time.time(),
             }
@@ -235,6 +242,8 @@ class AgentStore:
             return row
 
     def update_custom(self, agent_id: str, **fields: Any) -> dict[str, Any]:
+        if "skills" in fields:
+            fields["skills"] = validate_skill_selection(fields["skills"])
         want = str(agent_id or "").strip().lower()
         with self._lock:
             data = self._load()
@@ -262,6 +271,8 @@ class AgentStore:
                     row["default"] = bool(fields["default"])
                 if "model" in fields and fields["model"] is not None:
                     row["model"] = _clean_text(fields["model"], MAX_MODEL)
+                if "skills" in fields:
+                    row["skills"] = fields["skills"]
                 row["updated_at"] = time.time()
                 self._save(data)
                 return row
@@ -300,6 +311,7 @@ class AgentStore:
                 "enabled": bool(row.get("enabled", True)),
                 "default": bool(row.get("default", False)),
                 "model": _clean_text(row.get("model"), MAX_MODEL),
+                "skills": row.get("skills"),
             })
         return {
             "builtin": builtin,
@@ -318,6 +330,7 @@ class AgentStore:
             if not cfg["enabled"] and not is_core(role, track):
                 continue
             item = dict(spec)
+            item["skills"] = cfg["skills"]
             if cfg["model"]:
                 item["model"] = cfg["model"]
             out[role] = item
@@ -334,6 +347,7 @@ class AgentStore:
                 "description": _clean_text(row.get("description"), MAX_DESCRIPTION),
                 "prompt": _clean_text(row.get("prompt"), MAX_PROMPT),
                 "custom": True,
+                "skills": row.get("skills"),
                 "tracks": tracks,
             }
             model = _clean_text(row.get("model"), MAX_MODEL)
