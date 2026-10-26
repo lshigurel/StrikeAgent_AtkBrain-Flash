@@ -179,7 +179,12 @@ async def call_agent_tool(pid: str, name: str, request: Request):
         args = {}
     if fn is None:
         return JSONResponse({"text": f"unknown tool {name}", "is_error": True}, status_code=404)
-    out = await fn(args)
+    from ..engine.intent_gate import tool_caller_role
+    role_token = tool_caller_role.set(role)
+    try:
+        out = await fn(args)
+    finally:
+        tool_caller_role.reset(role_token)
     text = ""
     if isinstance(out, dict):
         content = out.get("content") or []

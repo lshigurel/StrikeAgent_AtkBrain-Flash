@@ -21,12 +21,12 @@ HOP_AUTH_FALSE_DISPROVE_MSG = (
 HOP_AUTH_NUDGE_MSG = (
     "经已验证跳板看到活着的邻机后，本轮主线是 hop_auth："
     "用图上或简报已有字面量账密/token（含授权测试身份），经该跳板把认证请求体送到邻机处理接口。"
-    "无请求体的空 POST 不能否证。禁止 Kali 直连，禁止喷字典，禁止再把扫段空号扩进 Scope。"
+    "无请求体的空 POST 不能否证。禁止本机直连，禁止喷字典，禁止再把扫段空号扩进 Scope。"
 )
 SITUATION_HOP_AUTH = (
     "【局面·邻机过门】本轮第一动作必须经已有立足点 shell、已验证 SSRF/代理参数、"
     "或入口上的转发端口，把认证请求体或 SSH 横幅送到已认领 hop_auth 的那一跳。"
-    "禁止 Kali 直连，禁止喷字典，禁止回头打已交过旗的入口。"
+    "禁止本机直连，禁止喷字典，禁止回头打已交过旗的入口。"
     "另两格仍可打未授权/跳板正交面，但不能替代这一跳过门。"
 )
 DELIVERY_FILE = ".atkbrain_hop_delivery.json"

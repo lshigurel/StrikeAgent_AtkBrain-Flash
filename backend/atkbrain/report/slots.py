@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .writeup import real_poc_text
-from ..graph.model import display_finding_severity
+from ..graph.model import display_finding_severity, node_is_landed_shell
 from ..i18n.locale import get_report_lang, normalize_locale, set_report_lang
 from ..i18n.report_labels import apply_shell_chrome, kind_map, lab, pn_map, sev_map, verify_map
 
@@ -34,7 +34,7 @@ SEV_CHIP = {
 SEV_DOT = {
     "critical": "var(--crit)",
     "high": "var(--high)",
-    "medium": "var(--muted-soft)",
+    "medium": "var(--med)",
     "low": "var(--muted)",
     "info": "var(--muted)",
 }
@@ -45,9 +45,9 @@ VERIFY_LABEL = {
     "verified": "已验证", "pending": "待复验", "flaky": "待复验",
 }
 PN_CLS = {
-    "target": "info", "service": "info", "host": "info", "endpoint": "info", "info": "info",
+    "target": "info", "service": "svc", "host": "info", "endpoint": "info", "info": "info",
     "danger": "warn",
-    "vuln": "crit", "foothold": "crit",
+    "vuln": "crit", "foothold": "hold",
     "goal": "goal",
 }
 PN_KIND = {
@@ -368,8 +368,9 @@ def _asset_map_svg(assets: list[dict]) -> str:
         x = 40 + col * 270
         y = 28 + row * 96
         title = sanitize_visible(str(a.get("title") or a.get("key") or lab("asset")))[:28]
-        kind = kind_map().get(str(a.get("kind") or ""), lab("asset"))
-        stroke = "#c64545" if str(a.get("kind") or "") in ("vuln", "danger") else "#cc785c"
+        raw_kind = str(a.get("kind") or "")
+        kind = kind_map().get(raw_kind, lab("asset"))
+        stroke = "#c64545" if raw_kind in ("vuln", "danger") else ("#3E78C2" if raw_kind == "service" else "#cc785c")
         boxes.append(
             f'<g filter="url(#am-shadow)">'
             f'<rect x="{x}" y="{y}" width="240" height="62" rx="14" fill="#fffdf8" '
@@ -587,6 +588,101 @@ def render_vf_card(f: dict, *, n: int, enrich: dict | None = None) -> str:
     )
 
 
+_HOST_ROOT_RE = re.compile(r"宿主|host[-_ ]?root|hostroot|docker[-_ ]?host|外层宿主", re.I)
+_PORT_RE = re.compile(r"(?:(?:\d{1,3}\.){3}\d{1,3}):(\d{2,5})\b")
+_IPV4_RE = re.compile(r"(?:\d{1,3}\.){3}\d{1,3}")
+_APP_NAMES = (
+    ("linkvault", "linkvault"),
+    ("aegis", "aegis"),
+    ("pan-os", "panos"),
+    ("panos", "panos"),
+    ("gitlab", "gitlab"),
+    ("render again", "renderagain"),
+    ("renderagain", "renderagain"),
+)
+
+
+def _node_tags(node: dict) -> set[str]:
+    return {str(t).lower() for t in (node.get("tags") or [])}
+
+
+def _generic_shell_title(title: str) -> bool:
+    def compact(text: str) -> str:
+        return re.sub(r"[\s:：（）()@.\d-]", "", text or "").lower()
+
+    raw = compact(title)
+    stripped = compact(LEAK_RE.sub("", title or ""))
+    generic = {"", "getshellroot", "getshell", "立足点shellroot", "立足点shell", "root"}
+    return raw in generic or stripped in generic
+
+
+def _access_bucket(node: dict) -> str:
+    key = str(node.get("key") or "")
+    title = str(node.get("title") or "")
+    blob = f"{key} {title}"
+    low = blob.lower()
+    tags = _node_tags(node)
+    if tags & {"docker-host", "host-root", "escaped"} or _HOST_ROOT_RE.search(blob) or "hostroot" in low or "host-root" in low:
+        return "host-root"
+    for needle, name in _APP_NAMES:
+        if needle in low:
+            return f"app:{name}"
+    port = _PORT_RE.search(blob)
+    if port:
+        return f"port:{port.group(1)}"
+    ips = _IPV4_RE.findall(blob)
+    if ips:
+        return f"ip:{ips[0]}"
+    return f"key:{key}"
+
+
+def _merge_access_buckets(groups: dict[str, list[str]]) -> dict[str, list[str]]:
+    merged = {k: list(v) for k, v in groups.items()}
+    app_text = {
+        key: " ".join(titles)
+        for key, titles in merged.items()
+        if key.startswith("app:")
+    }
+    for key, titles in list(merged.items()):
+        if key.startswith("app:") or key == "host-root":
+            continue
+        token = key.split(":", 1)[1]
+        if len(token) < 4:
+            continue
+        home = next((app for app, text in app_text.items() if token and token in text), "")
+        if not home:
+            continue
+        merged[home].extend(titles)
+        del merged[key]
+    return merged
+
+
+def obtained_access_labels(data: dict) -> list[str]:
+    """已落地的命令执行，按主机或应用去重。同一处权限只算一条。"""
+    nodes = list(((data.get("graph") or {}).get("nodes")) or [])
+    groups: dict[str, list[str]] = {}
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if not node_is_landed_shell(
+            str(node.get("type") or ""),
+            str(node.get("key") or ""),
+            list(node.get("tags") or []),
+            bool(node.get("is_rce")),
+        ):
+            continue
+        title = sanitize_visible(str(node.get("title") or "")).strip()
+        if not title or _generic_shell_title(title):
+            title = ""
+        groups.setdefault(_access_bucket(node), []).append(title)
+    labels: list[str] = []
+    for titles in _merge_access_buckets(groups).values():
+        real = [item for item in titles if item]
+        labels.append((sorted(real, key=lambda item: (len(item), item))[0] if real else "已获取权限")[:90])
+    labels.sort()
+    return labels
+
+
 def _kpis_html(data: dict, counts: dict[str, int], findings: list[dict]) -> str:
     total = counts.get("total") or 0
     crit = counts.get("critical") or 0
@@ -597,9 +693,10 @@ def _kpis_html(data: dict, counts: dict[str, int], findings: list[dict]) -> str:
     st = _graph_stats(data)
     n_svc = int(st.get("services") or st.get("nodes") or 0)
     p0 = "P0" if crit else ("P1" if high else "P2")
-    if data.get("has_shell"):
+    access_n = len(obtained_access_labels(data))
+    if access_n:
         goal = (
-            '<div class="kpi goal"><div class="k-ico">🏁</div><div class="k-num">1</div>'
+            f'<div class="kpi goal"><div class="k-ico">🏁</div><div class="k-num">{access_n}</div>'
             f'<div class="k-label">{_esc(lab("kpi.got_access"))}</div></div>'
         )
     else:
@@ -670,6 +767,10 @@ def _summary_html(data: dict, counts: dict[str, int], enrich: dict | None) -> st
     note = (enrich or {}).get("verify_note") or lab("sum.note")
     left_html = left if str(left).lstrip().startswith("<") else _rich_or_block(left)
     right_html = right if str(right).lstrip().startswith("<") else _rich_or_block(right)
+    accesses = obtained_access_labels(data)
+    if accesses:
+        items = "".join(f"<li>{_esc(label)}</li>" for label in accesses)
+        left_html += f'<p><b>{_esc(lab("kpi.got_access"))}</b></p><ul>{items}</ul>'
     note_html = note if "<" in str(note) else _esc(sanitize_visible(note))
     return (
         '<div class="sum-grid">'

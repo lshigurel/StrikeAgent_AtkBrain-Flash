@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from ..engine.intranet_reach import SSRF_NEIGHBOR_RULE
-from ..graph.rating_rubric import RATING_RUBRIC
+from ..graph.cvss31 import CVSS31_REVIEW
 from ..objective import normalize_objective, objective_allows_flag, objective_is_src
 from ..scope import Scope, authorized_registrable_domains
 from .kali_kit import KIT_SKILL_HINT
@@ -54,11 +54,10 @@ def _spiral_enum_block(*, ctf: bool) -> str:
 
 def _src_recon_block() -> str:
     return (
-        "- 开局：读 skill `src-hunt-playbook`。厂商 11 类是菜单：按入口形态选该测的洞，低/中/高危/严重都要 report_finding 进漏洞页；不是每轮全开，也不是 GETSHELL。"
-        "资产铺开：nmap `--top-ports 1000`、中档目录、JSFinder、robots/swagger；"
-        "入口已确认时 `src-hunt` 与 recon 同一回合并行开（只派有对应面的类型；御主要 web-exploit 再加）。"
+        "- 开局：读 skill `src-hunt-playbook`。先发现漏洞：按入口形态选类型，低/中/高危/严重都要 report_finding。"
+        "同时把已证实的危害往 getshell 做。入口已确认时 `web-exploit`、`src-hunt` 与 recon 同一回合并行。"
         "禁止从者代替工人打完所有洞。静态 SPA 不是无攻击面。"
-        "不要螺旋升圈，不要先看题交旗，不要为 getshell 停工，不要委派 `lateral` / `privesc` / `flag-hunt`。"
+        "不要螺旋升圈，不要先看题交旗，不要委派 `flag-hunt`。"
         "每个工人只做一面或一类；禁止再开子进程。"
     )
 
@@ -74,10 +73,10 @@ def _src_enum_block() -> str:
 def _flag_fragments(obj: str) -> dict[str, str]:
     if objective_is_src(obj):
         return {
-            "hunt_agent": " / `src-hunt`",
+            "hunt_agent": " / `web-exploit` / `src-hunt`",
             "commander_report": "`report_finding`",
             "graph_flag_note": (
-                "本赛道不夺旗、不提交 flag；战果用 report_finding 上报高危/严重。"
+                "本赛道不夺旗。战果用 report_finding 上报；命令执行后 report_shell 收工。"
             ),
             "final_stage": "SRC：按厂商清单挖高危/严重",
             "ssrf_block": (
@@ -91,19 +90,20 @@ def _flag_fragments(obj: str) -> dict[str, str]:
             ),
             "graph_land_block": (
                 "  活端口/指纹 → `service`；路径/接口/文件/参数/跳转 → `info`；401/403/500/登录报错/上传面 → `danger`；"
-                "已验证漏洞（已打出危害）→ `vuln`+`report_finding`。只碰到业务报错 → `danger`，不要当发现页成果。命令执行只当高危证据（无害 canary），不要 `report_shell` 收工、不要标 GETSHELL。\n"
+                "已验证漏洞（已打出危害）→ `vuln`+`report_finding`。只碰到业务报错 → `danger`，不要当发现页成果。命令执行证明后 `report_shell`。\n"
                 "  扫空、否证也要 `resolve_intent` 或 `note`，不要假装没跑过。\n"
                 "- 标题按漏洞类型写；不要写成 GETSHELL。\n"
             ),
             "delegate_step3": (
-                "3) 按入口形态挖仍有面、还未覆盖的高危类型（XSS/注入/RCE/文件/越权/逻辑/泄露/后门/N-day）。"
-                "没有对应面不要硬派。禁止委派 `lateral` / `privesc` / `flag-hunt`。"
+                "3) 继续找还没测的漏洞，同时把已证实的读文件、写入、凭证做到命令执行。"
+                "先打开入口 HTML 里的内容页，把图片、文件、下载地址建成节点，再打第一个 500。"
+                "活页面上的文件参数和接口不要丢。`web-exploit` 与 `src-hunt` 并行。"
             ),
             "graph_postex_block": (
-                "- SRC 不转后渗、不以 getshell 收工：不要 `PIVOTS_TO`、不要 `report_shell` 收工。\n"
+                "- 已证实的危害要做到 getshell：读文件、写入、凭证继续往下打，命令执行后 `report_shell` 收工。\n"
+                "- 其它漏洞照样 `report_finding`，不要等 shell 才报。不夺旗。\n"
                 "- 已验证 SSRF 看见具体内网主机（登录页/横幅/目标响应里的地址）时必须 `report_pivot_capability`（ssrf_*）。"
                 f"{SSRF_NEIGHBOR_RULE}\n"
-                "- 命令执行只当高危证据，独立 `report_finding` 后继续挖下一类。\n"
                 "- 本赛道不夺旗。\n"
             ),
             "live_only_block": "",
@@ -115,7 +115,7 @@ def _flag_fragments(obj: str) -> dict[str, str]:
                 "已验证 SSRF 后，跳板看见的具体内网主机才 `report_pivot_capability` 扩进 Scope；"
                 f"{SSRF_NEIGHBOR_RULE}"
                 "后续只走已验证 SSRF 参数，禁止 Kali 直连。socks/shell 横向仍禁止。"
-                "命令执行只当高危证据，不要当跳板。\n"
+                "命令执行后 `report_shell` 收工，不要把 shell 拿去扫邻居。\n"
             ),
             "close_out_block": (
                 "- 已验证的读文件/RCE/注入：打到高危后独立 `report_finding`，继续挖厂商清单下一类；"
@@ -275,7 +275,7 @@ SYSTEM_PROMPT_TMPL = """你是 StrikeAgent_AtkBrain-Flash 的主智能体（从�
 
 # 执行纪律
 - 内置 bash / 读文件已禁用。命令用 `run_cmd`，HTTP 用 `http_request`。
-- 本轮小结/收尾写完即停，不要再打工具。系统会结束本轮去问御主。工人不得把回合拖住。CTF / SRC / 红队同一条。
+- 从者写完本轮小结就停止自己的工具。工人继续把入口页、内容页和其中的脚本读完，沿着页面里出现的地址验证，不要因为已经有一条发现就停。
 - CTF / 红队 / SRC 均可联网。已识别产品或版本时用 WebSearch 查 CVE/N-day/官方公告，再用 http_request 拉公告页（公网文档域名不越界）。没有版本不要对着目标喷 N-day 词表。
 - 工作区跨命令持久。遇蜜罐用 `mark_honeypot`。
 - 禁止攻击政府、教育、军队、学术网域名（.gov/.edu/.mil/.int，以及 .gov.cn/.edu.cn/.ac.uk/.go.jp 等）。写进作业范围也不放行。公开漏洞文档站只查阅，不能当目标。
@@ -313,17 +313,10 @@ SYSTEM_PROMPT_TMPL = """你是 StrikeAgent_AtkBrain-Flash 的主智能体（从�
 
 
 _GOAL_BLOCKS = {
-    "redteam": (
-        "红队最高指令是拿到服务器 shell（RCE / webshell / 反弹等）后 `report_shell`，即完成本项目。\n"
-        "工作循环：测试 → 验证 → `report_finding`（高危/严重）→ 推向命令执行；尚未 GETSHELL 则对下一活体面再来一圈。\n"
-        "高危/严重发现是推进手段，不单独收工；不要因为已有一条已验证洞就停测其它活体面。\n"
-        "满 12 小时墙钟硬停，或连续 30 轮没有新节点也没有新漏洞，记失败。拿到 shell 提前收工。不限轮次。\n"
-        "越界与破坏性写入由平台硬拦：洞要报，状态不要改。"
-    ),
     "src": (
-        "SRC / 漏洞赏金：目的是发现尽可能多的独立高危/严重，不是打穿一条 GETSHELL 链。"
-        "按入口形态选题，低/中/高危/严重都要 `report_finding`。不追求 getshell，不夺旗。\n"
-        "满 12 小时墙钟硬停，或连续 30 轮没有新节点也没有新漏洞，记失败。不限轮次。\n"
+        "agent测试：发现更多漏洞，并把已证实的危害做到 getshell。两件事同一轮同时做。\n"
+        "路径：侦察→找攻击面→深入利用。活页面上的文件、参数和接口都要跟。命令执行后 report_shell 收工。不夺旗。\n"
+        "满 6 小时墙钟硬停，或连续 30 轮没有新节点也没有新漏洞，记失败。不限轮次。\n"
         "越界与破坏性写入由平台硬拦：洞要报，状态不要改。"
     ),
     "flag": (
@@ -335,7 +328,9 @@ _GOAL_BLOCKS = {
         "本题必有解，禁止超级大字典撞库或撞哈希。"
     ),
 }
-_GOAL_BLOCKS["getshell"] = _GOAL_BLOCKS["redteam"]
+_GOAL_BLOCKS["agent"] = _GOAL_BLOCKS["src"]
+_GOAL_BLOCKS["redteam"] = _GOAL_BLOCKS["src"]
+_GOAL_BLOCKS["getshell"] = _GOAL_BLOCKS["src"]
 _GOAL_TOOL_HINTS = {
     "redteam": (
         "- `report_shell`：确认命令执行后上报，即收工。\n"
@@ -350,10 +345,12 @@ _GOAL_TOOL_HINTS = {
         "- `report_finding`：低/中/高危/严重都要报进漏洞页，评级按四级表对号入座。"
         "业务报错（角色不存在/参数不完整/空 data）不能评高危或严重，但仍要报；"
         "须打出非空业务数据或真实领取/兑换/拖库/RCE 才能评高危/严重。\n"
-        "- `report_shell`：命令执行只写无害 txt canary 证明，不要转后渗收工。"
+        "- `report_shell`：命令执行经无害 txt canary 证明后上报，即收工。"
     ),
 }
-_GOAL_TOOL_HINTS["getshell"] = _GOAL_TOOL_HINTS["redteam"]
+_GOAL_TOOL_HINTS["agent"] = _GOAL_TOOL_HINTS["src"]
+_GOAL_TOOL_HINTS["redteam"] = _GOAL_TOOL_HINTS["src"]
+_GOAL_TOOL_HINTS["getshell"] = _GOAL_TOOL_HINTS["src"]
 
 
 def _project_vhosts(project: dict | None) -> list[str]:
@@ -534,7 +531,7 @@ def build_system_prompt(
         scope_desc = "- 作业对象：见本轮指令。"
     obj = normalize_objective(objective)
     if obj not in _GOAL_BLOCKS:
-        obj = "redteam"
+        obj = "agent"
     agents = build_subagents(obj)
     subagent_list = "、".join(f"`{k}`" for k in agents)
     tool_list = ", ".join(tool_names(obj))
@@ -567,11 +564,18 @@ def tool_list_for_prompt(objective: str = "getshell") -> str:
 
 
 def default_fanout_roles(objective: str = "getshell") -> list[str]:
+    """开局派 web-exploit 和 recon；flag 赛道同基础集，src 赛道换成 src-hunt。
+
+    额外角色由 agent_registry 按 objective 给出（赛道默认 + 用户自定义）。
+    """
     from .agent_registry import default_extra_roles
 
+    # objective_is_src 在新版本里等价于「非 CTF」，不能用来判断 SRC 赛道，
+    # 这里按字面量判，只有显式 src 才换 src-hunt。
+    raw = str(objective or "").strip().lower()
     if objective_allows_flag(objective):
         base = ["web-exploit", "recon"]
-    elif objective_is_src(objective):
+    elif raw in ("src", "src-hunt"):
         base = ["src-hunt", "recon"]
     else:
         base = ["web-exploit", "recon"]
@@ -580,6 +584,40 @@ def default_fanout_roles(objective: str = "getshell") -> list[str]:
         if name not in out:
             out.append(name)
     return out
+
+
+def ensure_live_page_reader(
+    roles: list[str], objective: str | None, *, http: bool, keep_rce: bool = False,
+) -> list[str]:
+    """HTTP 的 agent 测试保持 web-exploit 和 recon。已有漏洞或凭证时把 rce-hunt 留在名额里。"""
+    cleaned = [str(r).strip() for r in roles if str(r).strip()]
+    if not http or objective_allows_flag(objective) or not objective_is_src(objective):
+        return cleaned
+    if keep_rce and "rce-hunt" not in cleaned and "privesc" not in cleaned:
+        cleaned = ["rce-hunt", *cleaned]
+    preferred = ["web-exploit", "rce-hunt", "recon", "src-hunt"]
+    head = [r for r in preferred if r in cleaned or r in ("web-exploit", "recon")]
+    rest = [r for r in cleaned if r not in head]
+    out: list[str] = []
+    for role in head + rest:
+        if role not in out:
+            out.append(role)
+    return out
+
+
+def graph_needs_rce_hunter(graph: dict | None) -> bool:
+    """已经有漏洞或凭证、还没有立足点时，要留命令执行方向的工人。"""
+    nodes = (graph or {}).get("nodes") or []
+    interesting = False
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        kind = str(node.get("type") or "")
+        if kind in ("foothold", "goal"):
+            return False
+        if kind in ("vuln", "credential"):
+            interesting = True
+    return interesting
 
 
 FINDING_REVIEW_ROLE = "finding-review"
@@ -604,9 +642,7 @@ _FINDING_REVIEW_COMMON = (
     "禁止新建漏洞条目：report_finding 必须带清单里的 finding_id 和原来的 node_key；"
     "禁止换 node_key/标题把同一 CVE 或同一上传接口再报一条。"
     "不要写 report_summary/report_impact/report_rating/report_repro/report_fix，页面另有撰稿补。"
-    "版本命中或仅白名单文件写不是 RCE：未打成命令执行则不要评 high/critical，也不要报 rce。"
-    "任意文件读写默认中危，不要压成低危；不要把一般 SQLi/存储 XSS/越权进后台抬成高危。"
-    "四级表不是白名单：对不上条目的已入库洞也要按清单任务处理，就近中危或低危，不要标 info 丢掉。"
+    "版本命中或仅白名单文件写不是命令执行：没打成执行就不要报 rce，影响三项也不能按完全失控来打。"
     "命令用 run_cmd，Web 用 http_request。"
 )
 
@@ -617,11 +653,15 @@ _FINDING_REVIEW_BOTH = (
     "对每一条先独立再打一遍（换观测通道 / 重放 PoC / 对照预期回显），不能只把首次 evidence 再贴一遍，也不能只凭 HTTP 200。"
     "只有再次看到同样的危害（文件内容、命令回显、越权数据、凭证明文等，且不是把首次证据抄一遍）才算证明。"
     "证明了才 report_finding：必须带原来的 finding_id（有则必填）和 node_key，"
-    "secondary_verified=true、redteam_rating（critical|high|medium|low|info）、"
-    "redteam_rating_rationale（至少 40 字，写清这次新看到了什么、为何按四级表是这个级）。"
-    "没有独立证明同样危害就收口为排除：verification_status=excluded，secondary_verified=false，"
-    "理由至少 40 字写清打了什么、没看到什么。排除只针对这一条，不要写成这类漏洞不存在，也不要删条目。"
-    "\n" + RATING_RUBRIC
+    "secondary_verified=true，并填齐 NVD CVSS 3.1 八项基础指标（cvss_av/ac/pr/ui/s/c/i/a）。"
+    "不要手填 redteam_rating 或 cvss 分数，系统按规范公式写入级别。"
+    "redteam_rating_rationale 至少 40 字，写清这次新看到了什么，以及八项为什么这样打。"
+    "没有独立证明同样危害就记二次验证失败：verification_status=excluded，secondary_verified=false，"
+    "理由至少 40 字写清打了什么、没看到什么。工具若只回「本条意图已经写回，这次会话不再改打别的类型」，"
+    "这一步没有执行，不是没打出危害，不要写 excluded，保持未验证。"
+    "八项基础指标仍按实际打到的影响填齐。"
+    "失败只针对这一条，不要写成这类漏洞不存在，也不要删条目。用户可见文字写「二次验证失败」，不要写「排除」。"
+    "\n" + CVSS31_REVIEW
 )
 
 _FINDING_REVIEW_SECONDARY = (
@@ -631,19 +671,22 @@ _FINDING_REVIEW_SECONDARY = (
     "对每一条独立再打一遍（换观测通道 / 重放 PoC / 对照预期回显），不能只把首次 evidence 再贴一遍，也不能只凭 HTTP 200。"
     "只有再次看到同样的危害才算证明。证明了才 report_finding：必须带原来的 finding_id 和 node_key，"
     "secondary_verified=true，redteam_rating_rationale 至少 40 字写清这次新看到了什么。不要填 redteam_rating。"
-    "没有独立证明就收口为排除：verification_status=excluded，secondary_verified=false，"
-    "理由至少 40 字。排除只针对这一条，不要写成这类漏洞不存在。"
+    "没有独立证明就记二次验证失败：verification_status=excluded，secondary_verified=false，"
+    "理由至少 40 字。工具若只回「本条意图已经写回，这次会话不再改打别的类型」，"
+    "这一步没有执行，不是没打出危害，不要写 excluded，保持未验证。"
+    "失败只针对这一条，不要写成这类漏洞不存在。用户可见文字写「二次验证失败」，不要写「排除」。"
 )
 
 _FINDING_REVIEW_RATING = (
     "你是本项目专职的红队评级员，本回合只做红队评级，不要去做二次验证动手。"
     + _FINDING_REVIEW_COMMON
     + "只处理清单里还没有合法 redteam_rating 的已入库漏洞。"
-    "根据已有 evidence/PoC/二次验证叙述按四级表对号入座；"
-    "report_finding 必须带原来的 finding_id 和 node_key，"
-    "redteam_rating（critical|high|medium|low|info）与 redteam_rating_rationale（至少 40 字，写清为何是这个级）。"
-    "不要改 secondary_verified。未打成命令执行不要把 RCE 评严重/高危。"
-    "\n" + RATING_RUBRIC
+    "根据已有 evidence、PoC 和二次验证叙述填写 NVD CVSS 3.1 八项基础指标；"
+    "report_finding 必须带原来的 finding_id 和 node_key。"
+    "不要手填 redteam_rating 或 cvss 分数。redteam_rating_rationale 至少 40 字，写清八项为什么这样打。"
+    "不要传 verification_status，不要改 secondary_verified。未验证保持未验证，二次验证失败保持失败。"
+    "没打成命令执行不要按代码执行打分；已确认的数据读取或篡改仍可按 NVD 打成 High。"
+    "\n" + CVSS31_REVIEW
 )
 
 
@@ -678,20 +721,22 @@ def build_finding_review_instruction(findings: list[dict], mode: str | None = No
             "本回合只二次验证下列已入库漏洞。",
             "逐条动手后用 report_finding 回写同一条：必须带下面的 finding_id，不要新建标题或换 node_key。",
             "只有再次看到同样危害才回写 secondary_verified=true，理由至少 40 字写清这次新看到了什么。不要填红队评级。不要写漏洞页五段。",
-            "没证明则 verification_status=excluded 且 secondary_verified=false。排除只针对这一条。",
+            "没证明则 verification_status=excluded 且 secondary_verified=false，理由写清没看到什么。用户可见文字写二次验证失败，不要写排除。",
         ]
     elif global_mode == "rating":
         head = [
-            "本回合只给下列已入库漏洞做红队评级。",
+            "本回合只给下列已入库漏洞做 NVD CVSS 3.1 基础分。",
             "逐条用 report_finding 回写同一条：必须带下面的 finding_id，不要新建标题或换 node_key。",
-            "回写 redteam_rating 与至少 40 字理由。不要改二次验证。不要写漏洞页五段。",
+            "回写 NVD CVSS 3.1 八项基础指标和至少 40 字理由。不要手填级别或分数。"
+            "不要传 verification_status，不要改 secondary_verified。"
+            "未验证保持未验证，二次验证失败保持失败。不要写漏洞页五段。",
         ]
     else:
         head = [
-            "本回合处理下列已入库漏洞：按每条任务做二次验证、红队评级，或两件事一起做。",
+            "本回合处理下列已入库漏洞：按每条任务做二次验证、NVD CVSS 3.1 基础分，或两件事一起做。",
             "逐条动手后用 report_finding 回写同一条：必须带下面的 finding_id，不要新建标题或换 node_key。",
-            "同一 CVE / 同一上传接口禁止再报一条。红队评级按四级表对号入座，禁止抬级或压级。",
-            "未打成命令执行不要把 RCE 评严重/高危，也不要标 rce；任意文件操作默认中危。",
+            "同一 CVE / 同一上传接口禁止再报一条。级别只按 NVD CVSS 3.1 八项基础指标，由系统算分。",
+            "没打成命令执行不要标 rce，也不要按代码执行打成完全失控。",
             "不要写漏洞页五段，页面另补。",
         ]
     lines = head + [""]
@@ -702,11 +747,11 @@ def build_finding_review_instruction(findings: list[dict], mode: str | None = No
         lines.append(f"- node_key: `{f.get('node_key') or ''}`")
         lines.append(f"- severity/category: {f.get('severity') or ''} / {f.get('category') or ''}")
         if item_mode == "secondary":
-            lines.append("- 本条任务：只做二次验证。证明了才 secondary_verified=true；没证明则 verification_status=excluded 且 secondary_verified=false。不要填红队评级。")
+            lines.append("- 本条任务：只做二次验证。证明了才 secondary_verified=true；没证明则 verification_status=excluded 且 secondary_verified=false，理由写二次验证失败原因。不要填红队评级。")
         elif item_mode == "rating":
-            lines.append("- 本条任务：只做红队评级。redteam_rating + 理由≥40字。不要改二次验证。")
+            lines.append("- 本条任务：只做 NVD CVSS 3.1 基础分。填齐八项，理由≥40字。不要手填级别。不要传 verification_status，不要改 secondary_verified。未验证保持未验证。")
         else:
-            lines.append("- 本条任务：二次验证与红队评级同一轮写齐。没独立证明则标 excluded，不要标二次验证通过。")
+            lines.append("- 本条任务：二次验证与 NVD CVSS 3.1 基础分同一轮写齐。没独立证明则 verification_status=excluded、secondary_verified=false，并写二次验证失败原因；八项仍按实际影响填写。")
         ev = str(f.get("evidence") or "").strip()
         if ev:
             lines.append(f"- 首次 evidence: {ev[:500]}")
@@ -876,8 +921,11 @@ def build_turn_instruction(
             )
         elif objective_is_src(objective):
             early = (
-                "- 早期：已知 HTTP 入口先委派 `src-hunt` 打当前入口；并行 `recon`："
-                "nmap --top-ports 1000，中档目录、JSFinder。按入口形态选类型，不要 11 路全开。"
+                "- 早期：按侦察→找攻击面→深入利用，三步同一轮可以叠上。"
+                "没有面就 `recon`（nmap --top-ports 1000，中档目录、JSFinder）；"
+                "已经看见入口、参数或接口就委派 `web-exploit` 深入利用，并并行 `src-hunt` 找还没报的洞；"
+                "已经证实的读文件、写入、凭证继续做到命令执行。不要等侦察全部结束才许打。"
+                "按入口形态选类型，不要 11 路全开。"
                 "禁止螺旋升圈、禁止开局 -p-、禁止 Kali 直连与 socks/shell 横向。"
                 "已验证 SSRF 必须 report_pivot_capability。\n"
             )
@@ -895,8 +943,9 @@ def build_turn_instruction(
             )
         elif objective_is_src(objective):
             early = (
-                "- 早期：并行 `recon` + `src-hunt`。"
-                "recon 用 top-1000 与中档目录；按入口形态选类型。禁止螺旋升圈、全端口、Kali 直连与 socks/shell 横向。\n"
+                "- 早期：按侦察→找攻击面→深入利用，三步同一轮可以叠上。"
+                "并行 `web-exploit` + `src-hunt` + `recon`。recon 用 top-1000 与中档目录；看见面就深入利用，已证实的危害做到 getshell。"
+                "按入口形态选类型。禁止螺旋升圈、全端口、Kali 直连与 socks/shell 横向。\n"
             )
         else:
             early = (
@@ -915,12 +964,13 @@ def build_turn_instruction(
             "- flag 数齐立即收工换题（总分差不是漏旗）。" + postex_hint
         )
     elif objective_is_src(objective):
-        goal_line = f"按厂商清单挖已验证高危/严重（report_finding）；不要 getshell 收工。目标：{tgt}"
+        goal_line = f"发现更多漏洞，并把已证实的危害做到 getshell。路径：侦察→找攻击面→深入利用。命令执行后 report_shell 收工。目标：{tgt}"
         task_hint = (
             early
-            + "- 按入口形态从 XSS/注入/RCE/文件/越权/逻辑/泄露/后门/N-day 里选该测的，测→证→报高危。"
-            "没有 HTML 不要硬打 XSS，没有版本不要喷 N-day。\n"
-            "- 已验证洞提危害；不要停在第一条；命令执行只当高危证据。\n"
+            + "- 两件事同时做：一格继续找还没报的洞，一格把已经证实的读文件、写入或凭证做到命令执行。"
+            "按入口形态从 XSS/注入/命令执行/文件/越权/逻辑/泄露/后门/N-day 里选该测的。"
+            "没有 HTML 不要硬打 XSS，没有版本不要喷 N-day。活页面上的文件参数不要丢掉。\n"
+            "- 不要停在第一条，也不要等侦察全部结束才利用。命令执行后 report_shell 收工。\n"
             "- 禁止 Kali 直连与 socks/shell 横向、禁止 report_flag、禁止破坏业务。"
             "已验证 SSRF 看见具体内网主机必须 report_pivot_capability（探测地址/超时不要扩）。"
         )
@@ -959,7 +1009,7 @@ def build_turn_instruction(
                     )
                 elif objective_is_src(objective):
                     empty_intents = (
-                        "（无——请先委派 src-hunt 打入口，并行 recon："
+                        "（无——请先委派 web-exploit 打入口，并行 src-hunt 与 recon："
                         "top-1000 与中档目录；按入口形态选类型，不要预开 11 路）"
                     )
                 else:
@@ -971,7 +1021,7 @@ def build_turn_instruction(
                 if objective_allows_flag(objective):
                     empty_intents = "（无——请先看入口活体并委派 web-exploit；没有旗再 recon；不要螺旋升圈）"
                 elif objective_is_src(objective):
-                    empty_intents = "（无——请先并行委派 recon + src-hunt；按入口形态选类型）"
+                    empty_intents = "（无——请先并行委派 web-exploit + src-hunt + recon；按入口形态选类型）"
                 else:
                     empty_intents = "（无——请先并行委派第 1 圈 recon + web-exploit；旁站关）"
     return TURN_TMPL.format(
@@ -988,7 +1038,7 @@ def _builtin_subagents(objective: str = "getshell") -> dict[str, dict]:
     if allows_flag:
         lateral_tail = "每阶段拿到 flag 立即 report_flag。"
     else:
-        lateral_tail = "推进直至 report_shell（getshell）即收工。"
+        lateral_tail = "命令执行后 report_shell 收工。"
     ctf_no_mega = (
         "本题必有解：禁止 rockyou / 超过 10 万行的词表 / hashcat 全库去撞哈希或登录；"
         "个位数默认口令须打在认证处理接口上，未送达不算失败；送达后失败不要升字典。"
@@ -1032,12 +1082,18 @@ def _builtin_subagents(objective: str = "getshell") -> dict[str, dict]:
         )
         recon_fallback = (
             "若委派未点名某一面：并行 nmap top-1000（run_cmd timeout=90）+ 入口 http_request + whatweb；"
-            "已有 HTTP 面立刻中档 ffuf（timeout=120）+ JSFinder。"
+            "已有 HTTP 面先打开入口 HTML 里的同站内容链接（详情、条目、文章、图片、下载），"
+            "把这些页面里的图片、文件、下载地址建成节点，不要只抽脚本里的接口名。"
+            "内容和首页同长度的只当阴性对照。随后立刻中档 ffuf（timeout=120）+ JSFinder。"
+            "禁止把前端或 JS 里出现的接口写成端点全集，也禁止写目录枚举收益低。"
+            "必须做一次中档路径枚举（沿用该站响应里已经出现的后缀，timeout=120）。"
+            "和首页同状态同长度的只当阴性对照；301/302/403/500 或长度不同的路径逐个建成节点，并注明这是词表结果。"
+            "带文件名、路径、上传的入口单独记。静态目录、WEB-INF、已知目录穿不过，只否定这次穿越，不关闭页面上没出现的入口。"
             "端口确认活体后再考虑全端口。禁止 Kali 直连与 socks/shell 横向，禁止把 jdbc/rds 当新资产扫。"
             "已验证 SSRF 看见具体内网主机必须 report_pivot_capability（探测地址/超时不要扩）。"
         )
         web_ctf = (
-            "SRC：低/中/高危/严重都要 report_finding 进漏洞页。不要 getshell 收工，不要 report_flag。"
+            "agent测试：低/中/高危/严重都要 report_finding。已证实危害做到命令执行后 report_shell 收工，不要 report_flag。"
             "读 skill `src-hunt-playbook`。禁止破坏业务。"
             "已验证 SSRF 必须 report_pivot_capability 扩网；禁止 Kali 直连与 socks/shell 横向。"
         )
@@ -1066,7 +1122,14 @@ def _builtin_subagents(objective: str = "getshell") -> dict[str, dict]:
         },
         "web-exploit": {
             "description": "Web 漏洞利用：SQLi/XSS/SSRF/SSTI/XXE/LFI/上传/命令注入/反序列化/越权。",
-            "prompt": ("你是 Web 漏洞利用专家。针对给定攻击面做探测与实弹验证，优先通往 RCE/读文件/越权；"
+            "prompt": ("你是 Web 漏洞利用专家。先读入口 HTML，打开其中的同站内容页（详情、条目、文章、图片、下载），"
+                    "把页面里的图片、文件、下载地址建成节点。第一个返回 500 的接口、登录页、脚本里的接口名单，都不能代替这一步。"
+                    "同站已确认存在的入口要对齐调用形式：一种形式在别的入口上改变了响应，这个入口还没用过，就不能标成测完。"
+                    "方法名和参数名只用本站已经出现过的，不要新造。重写路径返回 404，不否定原来那个返回了不同状态的入口。堆栈里的方法名只是其中一种形式。"
+                    "带文件名、路径、本地文件或上传的参数就是攻击面，不要只跟着 JS 接口名单走。"
+                    "登录页不是唯一的面。同站其它接口只要有接收服务端路径、文件名或上传内容的参数，就单独当攻击面，不要停在已经报过的登录参数上。"
+                    "静态目录穿不过、WEB-INF 读不到，不能写成文件面已关闭。页面和 JS 没有、但状态或长度和首页不同的路径，要单独当攻击面。"
+                    "针对给定攻击面做探测与实弹验证，优先通往 RCE/读文件/越权；"
                     "确认漏洞 report_finding 附真实 PoC。"
                     "静态 SPA、无表单、同源 XHR=0 不是无攻击面：打路由/查询参数、Cookie、Authorization、"
                     "前端路由、JS 里落在作业对象注册域内的接口；测→证，命中立刻 report_finding，不要只落 info 交差。"
@@ -1085,8 +1148,9 @@ def _builtin_subagents(objective: str = "getshell") -> dict[str, dict]:
                     "经开放代理/SSRF 打内层登录：把方法与请求体转发到表单 action，不要停在外壳或站点根路径；"
                     "仍回登录页不是口令无效。"
                     + (
-                        "已验证后独立 report_finding，继续挖厂商清单下一类，不要 report_shell 收工。"
-                        "命令执行只写无害 txt canary 取回即删。"
+                        "已验证的洞先 report_finding。读文件、写入、凭证继续做到命令执行。"
+                        "拿到 POSIX `id`/`whoami` 回显后立即 report_shell 收工。"
+                        "命令执行只写无害 txt canary，取回即删。"
                         if is_src else
                         "已验证读文件/RCE 本轮收口，不要回头扫目录。"
                         "拿到 POSIX `id`/`whoami` 命令执行回显后立即 report_shell，不要只在对话里写「已确认」。"
@@ -1122,13 +1186,10 @@ def _builtin_subagents(objective: str = "getshell") -> dict[str, dict]:
             ),
         },
         "rce-hunt": {
-            "description": "把已确认漏洞转化为命令执行。" if not is_src else "把已确认漏洞打到高危影响（命令执行只当证据）。",
+            "description": "把已确认漏洞转化为命令执行。",
             "prompt": (
                 "你是拿 shell 专家。围绕已确认漏洞落地 RCE/webshell。"
                 "拿到执行权限后立即 report_shell。" + common_tail + kit_hint
-                if not is_src else
-                "你负责把已确认面打到高危：命令执行只写无害 txt canary 证明，立即 report_finding，不要转后渗。"
-                + common_tail + kit_hint
             ),
         },
         "privesc": {
@@ -1150,12 +1211,16 @@ def _builtin_subagents(objective: str = "getshell") -> dict[str, dict]:
         agents.pop("privesc", None)
         agents.pop("lateral", None)
         agents["src-hunt"] = {
-            "description": "SRC 厂商清单：按类型挖独立漏洞（低/中/高危都报），不 getshell 收工。",
+            "description": "按入口形态挖还没报的漏洞，低/中/高危/严重都报。",
             "prompt": (
                 "你按 skill `src-hunt-playbook` 挖厂商类型（XSS/注入/RCE/文件/越权/逻辑/泄露/后门/N-day）。"
                 "按当前入口形态选类型，不要把 11 类全打一遍。"
                 "低/中/高危/严重都要 report_finding 进漏洞页，附最小 PoC。评级按四级表对号入座，禁止抬级或压级。业务报错不能评高危或严重，但仍要报。"
-                "不要 report_flag，不要 getshell 收工。已验证 SSRF 必须 report_pivot_capability；"
+                "活页面上的文件参数、上传和写入不要标成无输入面后丢掉，交给深入利用做到命令执行。"
+                "入口 HTML 里的内容页要先打开，图片、文件、下载地址单独记。当前页面没有文件参数时，不要写成没有文件入口。"
+                "页面和 JS 没写出、响应却和首页不同的路径，才是还没看的入口。"
+                "一种调用形式在同站别的入口上改变了响应，还没在已确认入口上用过，就继续补。方法名和参数名只用本站已有的。"
+                "不要 report_flag。已验证 SSRF 必须 report_pivot_capability；"
                 "禁止 Kali 直连与 socks/shell 横向。不要停在第一条。"
                 + common_tail + kit_hint
             ),

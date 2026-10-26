@@ -210,6 +210,104 @@ CREATE TABLE IF NOT EXISTS auth_lockouts (
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_hash ON auth_sessions(token_hash);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_exp ON auth_sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_auth_challenges_exp ON auth_challenges(expires_at);
+
+CREATE TABLE IF NOT EXISTS vendors (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    created_at  REAL NOT NULL,
+    updated_at  REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS assets (
+    id          TEXT PRIMARY KEY,
+    vendor_id   TEXT NOT NULL,
+    kind        TEXT NOT NULL,                     -- root_domain|subdomain|ip|service|endpoint|app
+    identity    TEXT NOT NULL,
+    attrs       TEXT,
+    verified_at REAL,
+    created_at  REAL NOT NULL,
+    updated_at  REAL NOT NULL,
+    UNIQUE(vendor_id, kind, identity)
+);
+
+CREATE TABLE IF NOT EXISTS project_assets (
+    project_id  TEXT NOT NULL,
+    asset_id    TEXT NOT NULL,
+    in_scope    INTEGER NOT NULL DEFAULT 0,
+    scope_basis TEXT,
+    confirmed_at REAL,
+    PRIMARY KEY (project_id, asset_id)
+);
+
+CREATE TABLE IF NOT EXISTS finding_assets (
+    finding_id  TEXT NOT NULL,
+    asset_id    TEXT NOT NULL,
+    PRIMARY KEY (finding_id, asset_id)
+);
+
+CREATE TABLE IF NOT EXISTS asset_denies (
+    id          TEXT PRIMARY KEY,
+    pattern     TEXT NOT NULL UNIQUE,
+    reason      TEXT,
+    created_at  REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS http_exchanges (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL,
+    run_id      TEXT,
+    method      TEXT NOT NULL,
+    url         TEXT NOT NULL,
+    request_headers TEXT,
+    request_body TEXT,
+    status      INTEGER,
+    response_headers TEXT,
+    response_body TEXT,
+    response_summary TEXT,
+    created_at  REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS finding_http (
+    finding_id  TEXT NOT NULL,
+    exchange_id TEXT NOT NULL,
+    ordinal     INTEGER NOT NULL,
+    role        TEXT NOT NULL,
+    PRIMARY KEY (finding_id, exchange_id)
+);
+
+CREATE TABLE IF NOT EXISTS webhook_outbox (
+    id          TEXT PRIMARY KEY,
+    finding_id  TEXT,
+    payload     TEXT NOT NULL,
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    last_error  TEXT,
+    created_at  REAL NOT NULL,
+    sent_at     REAL
+);
+
+CREATE TABLE IF NOT EXISTS project_templates (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    track       TEXT,
+    clocks      TEXT,
+    model_chain TEXT,
+    created_at  REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS command_confirms (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL,
+    intent_id   TEXT,
+    command     TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    reason      TEXT,
+    created_at  REAL NOT NULL,
+    decided_at  REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_assets_vendor ON assets(vendor_id, kind);
+CREATE INDEX IF NOT EXISTS idx_http_project ON http_exchanges(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_project_assets_scope ON project_assets(project_id, in_scope);
 """
 
 
@@ -269,6 +367,9 @@ class Database:
             "result_summary": "TEXT",
             "active_run_id": "TEXT",
             "updated_at": "REAL",
+            "paused": "INTEGER NOT NULL DEFAULT 0",
+            "pending_steer": "TEXT",
+            "depends_on": "TEXT",
         }
         for name, definition in additions.items():
             if name not in columns:
@@ -303,6 +404,8 @@ class Database:
             "report_rating": "TEXT",
             "report_repro": "TEXT",
             "report_fix": "TEXT",
+            "disposition": "TEXT",
+            "retest_conclusion": "TEXT",
         }
         for name, definition in finding_adds.items():
             if name not in fcols:
@@ -321,6 +424,18 @@ class Database:
             "CREATE INDEX IF NOT EXISTS idx_findings_verification "
             "ON findings(project_id, verification_status)"
         )
+
+        cur = await self._conn.execute("PRAGMA table_info(projects)")
+        pcols = {row[1] for row in await cur.fetchall()}
+        await cur.close()
+        for name, definition in (
+            ("category", "TEXT"),
+            ("archived", "INTEGER NOT NULL DEFAULT 0"),
+            ("queued_at", "REAL"),
+            ("vendor_id", "TEXT"),
+        ):
+            if name not in pcols:
+                await self._conn.execute(f"ALTER TABLE projects ADD COLUMN {name} {definition}")
 
         cur = await self._conn.execute("PRAGMA table_info(auth_users)")
         ucols = {row[1] for row in await cur.fetchall()}

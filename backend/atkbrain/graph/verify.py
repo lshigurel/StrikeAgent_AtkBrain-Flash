@@ -94,10 +94,66 @@ _SECONDARY_FAIL = (
 )
 
 
+def rating_left_verification_alone(rationale: str | None) -> bool:
+    """评级回写自称没做二次验证时，不能改未验证或失败。"""
+    text = str(rationale or "")
+    marks = (
+        "保持原状", "未再动手", "未改二次验证", "不要改二次验证",
+        "只做 NVD", "只做红队评级", "本轮未再", "未做二次验证",
+    )
+    return any(m in text for m in marks)
+
+
 def secondary_claim_failed(rationale: str | None) -> bool:
     """复核自述没有打出同样危害时，不能记成二次验证通过。"""
     text = str(rationale or "")
     return any(p in text for p in _SECONDARY_FAIL)
+
+
+def recheck_did_not_run(rationale: str | None) -> bool:
+    """工具被意图闸拦住，请求没有发出去。这不是二次验证失败。"""
+    text = str(rationale or "")
+    marks = (
+        "本条意图已经写回",
+        "不再改打别的类型",
+        "这次会话不再",
+    )
+    return any(m in text for m in marks)
+
+
+def is_real_secondary_failure(rationale: str | None) -> bool:
+    """只有二次验证自己写明没打出同样危害，才算失败。"""
+    if rating_left_verification_alone(rationale) or recheck_did_not_run(rationale):
+        return False
+    text = str(rationale or "")
+    if "二次验证失败" in text or secondary_claim_failed(text):
+        return True
+    return "没看到" in text or "没有看到" in text or "没有独立证明" in text
+
+
+def merge_verification_status(
+    prev_status: str | None,
+    prev_secondary: bool,
+    incoming_status: str | None,
+    incoming_secondary: bool,
+    rationale: str | None,
+) -> tuple[str, bool]:
+    """回写同一条时：未验证保持未验证，二次验证失败保持失败。
+
+    评级或再次上报不能把未验证改成已验证或失败。
+    已经失败的条目，后面的回写不能改成已验证。
+    """
+    prev = (prev_status or "pending").strip().lower() or "pending"
+    if prev == "excluded":
+        return "excluded", False
+    incoming = (incoming_status or "").strip().lower()
+    if incoming == "excluded" and is_real_secondary_failure(rationale) and not incoming_secondary:
+        return "excluded", False
+    if incoming_secondary and not rating_left_verification_alone(rationale):
+        return "verified", True
+    if prev == "verified":
+        return "verified", bool(prev_secondary)
+    return "pending" if prev in ("", "pending") else prev, bool(prev_secondary)
 
 
 def is_visible_finding(row: dict | Any) -> bool:

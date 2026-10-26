@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from ..i18n.locale import get_locale, normalize_locale
 from ..i18n.strings import msg
 from ..config import settings
-from ..db import db, _loads
+from ..db import db, _loads, now
 from ..engine.scheduler import _task_is_cancelling, manager
 from ..graph import store as gstore
 from ..project_status import displayed_status, hunt_hard_stop_info
@@ -116,6 +116,9 @@ async def _require_llm_key_for(pid: str) -> None:
 
 class CreateProjectReq(BaseModel):
     kind: str = "single"
+    vendor: str | None = None
+    category: str | None = None
+    model_chain: list[str] | None = None
     name: str = ""
     target: str | None = None
     ports: list[int] | None = None
@@ -193,8 +196,10 @@ class ReviewFlagsReq(BaseModel):
 
 class HuntClocksReq(BaseModel):
     loop_max_turns: int | None = None
+    loop_max_turns_agent: int | None = None
     loop_max_turns_src: int | None = None
     loop_max_turns_redteam: int | None = None
+    agent_runtime_hard_stop_sec: int | None = None
     src_runtime_hard_stop_sec: int | None = None
     redteam_runtime_hard_stop_sec: int | None = None
     runtime_hard_stop_sec: int | None = None
@@ -202,6 +207,7 @@ class HuntClocksReq(BaseModel):
     runtime_hard_stop_pass3_sec: int | None = None
     runtime_hard_stop_pass_step_sec: int | None = None
     graph_idle_empty_plans: int | None = None
+    loop_stall_limit_agent: int | None = None
     loop_stall_limit_redteam: int | None = None
     loop_stall_limit_src: int | None = None
 
@@ -350,19 +356,24 @@ async def get_settings():
             "evolve_ai": bool(getattr(settings, "evolve_ai", True)),
             "loop_max_turns": settings.loop_max_turns,
             "hard_stop": {
-                "src": hunt_hard_stop_info("src"),
-                "redteam": hunt_hard_stop_info("redteam"),
+                "agent": hunt_hard_stop_info("agent"),
                 "flag": hunt_hard_stop_info("flag"),
             },
             "hunt_clocks": _hunt_clocks(),
         },
         "review": _review_flags(),
+        "webhook": _webhook_settings(),
     }
 
 
 def _review_flags() -> dict:
     from ..review.flags import get_review_flags
     return get_review_flags()
+
+
+def _webhook_settings() -> dict:
+    from ..notify import get_webhook
+    return get_webhook()
 
 
 def _hunt_clocks() -> dict:
@@ -384,8 +395,7 @@ async def set_hunt_clocks(req: HuntClocksReq):
     return {
         "hunt_clocks": clocks,
         "hard_stop": {
-            "src": hunt_hard_stop_info("src"),
-            "redteam": hunt_hard_stop_info("redteam"),
+            "agent": hunt_hard_stop_info("agent"),
             "flag": hunt_hard_stop_info("flag"),
         },
     }
@@ -703,17 +713,12 @@ async def api_list_projects():
 
 
 def _resolve_track_objective(track: str | None, objective: str | None) -> tuple[str, str]:
-    """把二级赛道 track（优先）与旧字段 objective 归一为 (track, objective)。
-    track ∈ {redteam, ctf, src}；objective ∈ {redteam, flag, src}。
-    """
+    """只返回 (agent, agent) 或 (ctf, flag)。旧的 redteam / src / getshell 都是 agent。"""
     t = (track or "").strip().lower()
     o = (objective or "").strip().lower()
-    if o == "getshell":
-        o = "redteam"
-    if t not in ("redteam", "ctf", "src"):
-        t = {"flag": "ctf", "src": "src"}.get(o, "redteam")
-    obj = {"redteam": "redteam", "ctf": "flag", "src": "src"}[t]
-    return t, obj
+    if t in ("ctf", "flag") or (not t and o in ("ctf", "flag")):
+        return "ctf", "flag"
+    return "agent", "agent"
 
 
 def _normalize_ctf_flag_count(value: int | None) -> int:
@@ -738,6 +743,15 @@ async def api_create_project(req: CreateProjectReq):
     hint = str(req.hint or "").strip()
     if hint:
         cfg["hint"] = hint[:8000]
+    if req.vendor:
+        cfg["vendor"] = str(req.vendor).strip()[:120]
+    if req.category:
+        cfg["category"] = str(req.category).strip()[:80]
+    chain = [str(x).strip() for x in (req.model_chain or []) if str(x or "").strip()]
+    if chain:
+        cfg["model_chain"] = chain
+        cfg["model_chain_index"] = 0
+        cfg.setdefault("model", chain[0])
     if req.model:
         cfg["model"] = req.model
     bench = req.kind == "benchmark" or (
@@ -753,7 +767,7 @@ async def api_create_project(req: CreateProjectReq):
             cfg["flag_count"] = _normalize_ctf_flag_count(req.flag_count)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
-    if track in ("redteam", "src"):
+    if track == "agent":
         from ..agents.brief_creds import extract_supplied_auth, merge_supplied_auth
         supplied = merge_supplied_auth(
             extract_supplied_auth(hint),
@@ -766,16 +780,16 @@ async def api_create_project(req: CreateProjectReq):
             cfg["track"] = "ctf"
             cfg["objective"] = "flag"
             proj = await create_benchmark_project(req.name or "benchmark", req.base_url, req.token, cfg)
-        elif req.kind == "cluster" and track == "src" and req.base_url and req.token:
-            cfg["track"] = "src"
-            cfg["objective"] = "src"
+        elif req.kind == "cluster" and track == "agent" and req.base_url and req.token:
+            cfg["track"] = "agent"
+            cfg["objective"] = "agent"
             proj = await create_benchmark_project(req.name or "benchmark", req.base_url, req.token, cfg)
         elif req.kind == "benchmark":
             if not req.base_url or not req.token:
                 raise HTTPException(400, "评测项目需要提供 base_url 与 token")
-            if track == "src":
-                cfg["track"] = "src"
-                cfg["objective"] = "src"
+            if track == "agent":
+                cfg["track"] = "agent"
+                cfg["objective"] = "agent"
             else:
                 cfg["track"] = "ctf"
                 cfg["objective"] = "flag"
@@ -804,6 +818,15 @@ async def api_create_project(req: CreateProjectReq):
             raise HTTPException(400, "kind 仅支持 single|cluster|benchmark")
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    if proj and proj.get("id") and (req.category or req.vendor):
+        await db.execute(
+            "UPDATE projects SET category=COALESCE(?, category), updated_at=? WHERE id=?",
+            ((str(req.category).strip()[:80] if req.category else None), now(), proj["id"]),
+        )
+        fresh = await get_project(proj["id"])
+        if fresh:
+            extra = {k: proj[k] for k in ("importing", "import_progress", "auto_started") if k in proj}
+            proj = {**fresh, **extra}
     return proj
 
 
@@ -858,8 +881,23 @@ async def api_get_project(pid: str):
     h = manager.get(pid)
     running = manager.is_running(pid)
     queued = manager.is_queued(pid)
+    cfg = dict(p.get("config") or {})
+    started_at = None
+    if running:
+        run_row = await db.fetchone(
+            "SELECT started_at, ended_at FROM runs WHERE project_id=? ORDER BY started_at DESC LIMIT 1",
+            (pid,),
+        )
+        if run_row and not run_row["ended_at"]:
+            started_at = run_row["started_at"]
+    from ..project_status import anchor_hunt_elapsed
+    cfg["hunt"] = anchor_hunt_elapsed(
+        cfg.get("hunt") if isinstance(cfg.get("hunt"), dict) else {},
+        running=running,
+        run_started_at=started_at,
+    )
     return {
-        **p, "graph": g,
+        **p, "config": cfg, "graph": g,
         "status": displayed_status(p.get("status"), running=running, queued=queued),
         "running": running,
         "queued": queued,
@@ -970,6 +1008,8 @@ async def api_start(pid: str, confirm_restart: bool = Query(False)):
             assert_safe_project_target(tgt)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+    if int(p.get("archived") or 0):
+        raise HTTPException(400, "项目已归档，不能开猎。")
     if manager.is_running(pid):
         return {"ok": True, "already": True}
     hard = bool(confirm_restart)
@@ -1460,6 +1500,10 @@ async def api_finding_detail(pid: str, fid: str, retry: int = Query(0)):
     poc = poc_for_finding(finding, target)
     preview = prepare_finding_report(finding, poc=poc)
     progress = None
+    from ..report.pi_finding_page import has_pi_page
+    if preview.get("report_state") == "ready" and not has_pi_page(finding):
+        from ..report.pi_finding_page import schedule_pi_page
+        schedule_pi_page(pid, fid)
     if preview.get("report_state") == "writing":
         from ..report.pi_finding_page import clear_page_failure, page_activity, schedule_pi_page
         if retry:
@@ -1515,3 +1559,192 @@ async def api_poc(pid: str, fid: str):
         "verification_status": row["verification_status"] if "verification_status" in row.keys() else None,
     }
     return poc_for_finding(finding, _project_http_target(p))
+
+
+class WebhookReq(BaseModel):
+    url: str | None = None
+    severities: list[str] | None = None
+    projects: list[str] | None = None
+    assets: list[str] | None = None
+
+
+class ScopeConfirmReq(BaseModel):
+    mode: str
+    basis: str
+    value: str = ""
+
+
+class IntentSteerReq(BaseModel):
+    message: str
+
+
+class CommandDecisionReq(BaseModel):
+    allow: bool = False
+    reason: str = ""
+
+
+class TemplateReq(BaseModel):
+    name: str = ""
+    template_id: str = ""
+    target: str = ""
+
+
+class ImportAssetsReq(BaseModel):
+    vendor: str
+    text: str = ""
+    project_id: str | None = None
+
+
+@router.post("/settings/webhook")
+async def api_set_webhook(req: WebhookReq):
+    from ..notify import set_webhook
+    return {"webhook": set_webhook(
+        url=req.url, severities=req.severities, projects=req.projects, assets=req.assets,
+    )}
+
+
+@router.post("/settings/webhook/retry")
+async def api_retry_webhook():
+    from ..notify import retry_outbox
+    return await retry_outbox()
+
+
+@router.post("/vendors/import")
+async def api_import_assets(req: ImportAssetsReq):
+    from ..assets import import_text
+    if not (req.vendor or "").strip():
+        raise HTTPException(400, "要有厂商名")
+    try:
+        return await import_text(req.text, vendor_name=req.vendor.strip(), project_id=req.project_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/projects/{pid}/scope/confirm")
+async def api_confirm_scope(pid: str, req: ScopeConfirmReq):
+    from ..assets import confirm_expansion
+    if not await get_project(pid):
+        raise HTTPException(404, msg("project_missing"))
+    try:
+        return await confirm_expansion(pid, mode=req.mode, basis=req.basis, value=req.value)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/projects/{pid}/archive")
+async def api_archive_project(pid: str):
+    proj = await get_project(pid)
+    if not proj:
+        raise HTTPException(404, msg("project_missing"))
+    if manager.is_running(pid) or manager.is_queued(pid):
+        await manager.halt(pid)
+    await db.execute(
+        "UPDATE projects SET archived=1, status='idle', queued_at=NULL, updated_at=? WHERE id=?",
+        (now(), pid),
+    )
+    return {"ok": True, "archived": True}
+
+
+@router.post("/projects/archive")
+async def api_archive_projects(req: BatchDeleteReq):
+    done = []
+    for pid in req.ids or []:
+        if not await get_project(pid):
+            continue
+        if manager.is_running(pid) or manager.is_queued(pid):
+            await manager.halt(pid)
+        await db.execute(
+            "UPDATE projects SET archived=1, status='idle', queued_at=NULL, updated_at=? WHERE id=?",
+            (now(), pid),
+        )
+        done.append(pid)
+    return {"ok": True, "archived": done}
+
+
+@router.post("/projects/{pid}/template")
+async def api_save_template(pid: str, req: TemplateReq):
+    from ..assets import save_template
+    try:
+        return await save_template(pid, req.name or "")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/project-templates")
+async def api_list_templates():
+    rows = await db.fetchall("SELECT id, name, track, created_at FROM project_templates ORDER BY created_at DESC")
+    return {"templates": rows}
+
+
+@router.post("/projects/from-template")
+async def api_from_template(req: TemplateReq):
+    from ..assets import template_config
+    try:
+        cfg = await template_config(req.template_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not (req.target or "").strip():
+        raise HTTPException(400, "从模板建项仍要填写主机或 IP")
+    try:
+        return await create_single_project(req.name or "来自模板", req.target, config=cfg)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/projects/{pid}/findings/{fid}/retest")
+async def api_retest_finding(pid: str, fid: str):
+    from ..retest import retest_finding
+    try:
+        return await retest_finding(pid, fid)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.post("/projects/{pid}/intents/{iid}/pause")
+async def api_pause_intent(pid: str, iid: str):
+    row = await db.fetchone(
+        "SELECT id, paused FROM intents WHERE id=? AND project_id=?",
+        (iid, pid),
+    )
+    if not row:
+        raise HTTPException(404, "意图不存在")
+    nxt = 0 if int(row.get("paused") or 0) else 1
+    await db.execute(
+        "UPDATE intents SET paused=?, updated_at=? WHERE id=?",
+        (nxt, now(), iid),
+    )
+    return {"ok": True, "paused": bool(nxt)}
+
+
+@router.post("/projects/{pid}/intents/{iid}/steer")
+async def api_steer_intent(pid: str, iid: str, req: IntentSteerReq):
+    row = await db.fetchone("SELECT id FROM intents WHERE id=? AND project_id=?", (iid, pid))
+    if not row:
+        raise HTTPException(404, "意图不存在")
+    text = (req.message or "").strip()
+    if not text:
+        raise HTTPException(400, "纠偏不能为空")
+    await db.execute(
+        "UPDATE intents SET pending_steer=?, updated_at=? WHERE id=?",
+        (text[:2000], now(), iid),
+    )
+    if manager.is_running(pid):
+        manager.steer(pid, text, intent_id=iid)
+    return {"ok": True}
+
+
+@router.post("/projects/{pid}/commands/{cid}")
+async def api_decide_command(pid: str, cid: str, req: CommandDecisionReq):
+    from ..engine.intent_gate import decide_command
+    row = await db.fetchone(
+        "SELECT id FROM command_confirms WHERE id=? AND project_id=?",
+        (cid, pid),
+    )
+    if not row:
+        raise HTTPException(404, "没有这条待确认命令")
+    decide_command(cid, allow=bool(req.allow), reason=req.reason or "")
+    await db.execute(
+        "UPDATE command_confirms SET status=?, reason=?, decided_at=? WHERE id=?",
+        ("allowed" if req.allow else "rejected", (req.reason or "")[:500], now(), cid),
+    )
+    return {"ok": True, "allow": bool(req.allow)}

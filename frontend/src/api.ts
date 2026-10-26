@@ -250,6 +250,30 @@ export const api = {
       headers: J,
       body: JSON.stringify(body),
     }),
+  setWebhook: (body: { url?: string; severities?: string[]; projects?: string[]; assets?: string[] }) =>
+    req<{ webhook: { url: string; severities: string[]; projects: string[]; assets: string[] } }>("/api/settings/webhook", {
+      method: "POST",
+      headers: J,
+      body: JSON.stringify(body),
+    }),
+  retryWebhook: () => req<{ sent: number; failed: number }>("/api/settings/webhook/retry", { method: "POST" }),
+  archiveProjects: (ids: string[]) =>
+    req<{ ok: boolean; archived: string[] }>("/api/projects/archive", {
+      method: "POST",
+      headers: J,
+      body: JSON.stringify({ ids }),
+    }),
+  saveProjectTemplate: (id: string, name: string) =>
+    req<{ id: string; name: string }> (`/api/projects/${id}/template`, {
+      method: "POST",
+      headers: J,
+      body: JSON.stringify({ name }),
+    }),
+  retestFinding: (projectId: string, findingId: string) =>
+    req<{ conclusion: string; label: string; disposition?: string | null }>(
+      `/api/projects/${projectId}/findings/${findingId}/retest`,
+      { method: "POST" },
+    ),
   setHuntClocks: (body: Record<string, number>) =>
     req<{ hunt_clocks: Record<string, number>; hard_stop: Record<string, { label?: string; conditions?: string[] }> }>(
       "/api/settings/hunt-clocks",

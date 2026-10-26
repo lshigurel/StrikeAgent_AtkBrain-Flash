@@ -141,11 +141,8 @@ def _canonical_host(host: str) -> str:
 
 
 def preferred_host(host: str) -> str:
-    """子项目身份：去掉 www. 前缀，a.com 与 www.a.com 视为同一主机。"""
-    h = _canonical_host(host)
-    if h.startswith("www.") and len(h) > 4:
-        return h[4:]
-    return h
+    """子项目身份就是用户写下的那台主机。不把 www 收成根域，也不自动补 www。"""
+    return _canonical_host(host)
 
 
 def fold_host_keys(host: str) -> set[str]:
@@ -507,15 +504,14 @@ def preview_asset_groups(
     objective: str | None = None,
 ) -> dict:
     """同步预览：去路径/www/表头后按赛道收组。不做 DNS，导入时才会按源站 IP 再并。"""
-    from .objective import normalize_objective, objective_is_src
+    from .objective import objective_is_src
 
     t = (track or "").strip().lower()
     o = (objective or "").strip().lower()
-    if t in ("src", "ctf", "redteam"):
-        obj = {"src": "src", "ctf": "flag", "redteam": "redteam"}[t]
+    if t in ("ctf", "flag") or (not t and o in ("ctf", "flag")):
+        t, obj = "ctf", "flag"
     else:
-        obj = normalize_objective(o or t)
-        t = "src" if obj == "src" else ("ctf" if obj == "flag" else "redteam")
+        t, obj = "agent", "agent"
     src = objective_is_src(obj)
     headers = list_skipped_headers(assets)
     kept, skipped_dup = compact_assets_by_host(assets)
@@ -1373,7 +1369,7 @@ async def add_assets_to_cluster(project_id: str, assets: list[str]) -> dict:
         seen_t: set[str] = set()
         for a in existing_assets:
             info = _normalize_asset(a)
-            h = preferred_host((info.get("host") or a) if info else a)
+            h = str((info.get("host") if info else a) or "").strip().lower().rstrip(".")
             if h and h not in seen_t:
                 seen_t.add(h)
                 scope_targets_out.append(h)

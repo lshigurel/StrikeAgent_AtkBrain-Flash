@@ -67,6 +67,9 @@ export function FindingReportModal({
   const shownSev = displayFindingSeverity(d || finding);
   const title = `[${shownSev.toUpperCase()}] ${scrubCandidateRceLabel(finding.title) || finding.title}`;
   const state = d?.report_state || (d?.report_pending ? "pending" : d ? "ready" : "pending");
+  const failed = (
+    finding.verification_status || detail?.verification_status || ""
+  ).toLowerCase() === "excluded";
   const showPage = state === "ready";
   const curl = showPage ? (poc?.curl || d?.poc_curl || "").trim() : "";
   const summary = showPage ? (d?.report_summary || "") : "";
@@ -74,11 +77,13 @@ export function FindingReportModal({
   const rating = showPage ? (d?.report_rating || "") : "";
   const repro = showPage ? (d?.report_repro || "") : "";
   const fix = showPage ? (d?.report_fix || "") : "";
-  const placeholder = state === "writing"
-    ? t("findings.writing")
-    : state === "failed"
-      ? t("findings.writeFailed")
-      : t("findings.pendingCopy");
+  const placeholder = state === "ready"
+    ? t("findings.notCollected")
+    : state === "writing"
+      ? t("findings.writing")
+      : state === "failed"
+        ? t("findings.writeFailed")
+        : t("findings.pendingCopy");
 
   return (
     <Modal title={title} onClose={onClose} wide>
@@ -101,6 +106,15 @@ export function FindingReportModal({
 
         {d && (
           <>
+            {failed && (
+              <>
+                <h3>{t("findings.excludeReason")}</h3>
+                <SectionBody
+                  text={(d.exclusion_reason || d.redteam_rating_rationale || d.proof_detail || "").trim()}
+                  placeholder={t("findings.excludeReasonMissing")}
+                />
+              </>
+            )}
             {state === "pending" && (
               <p className="muted" style={{ fontSize: 12, margin: "0 0 12px" }}>
                 {t("findings.pageNote")}

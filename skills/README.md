@@ -9,7 +9,7 @@ Skill 源文件和本项目绑定，**不是**本机 `~/.claude` 或 `~/.pi` 全
 
 | skill | 赛道 |
 |------|------|
-| `kali-kit` | 共用：Kali 工具绝对路径 |
+| `kali-kit` | 共用：仓库内真实工具路径（不假设系统发行版） |
 | `waf-bypass-methodology` | 共用：利用载荷被 WAF / 403 / 406 拦住时 |
 | `recon-fanout` | CTF |
 | `recon-spiral` | 红队 |

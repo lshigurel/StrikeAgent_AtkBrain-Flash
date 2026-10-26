@@ -1,7 +1,7 @@
 # HTTP 协议层绕过
 ## 2.1 分块传输编码（Chunked Transfer Encoding）
 
-WAF 可能不完整解析分块请求。`http_request` 若组不出 chunked，用 `run_cmd` + `/usr/bin/curl` 发原始报文：
+WAF 可能不完整解析分块请求。优先用 `http_request`。不要假设 `/usr/bin/curl` 存在。
 
 ```http
 POST /api/login HTTP/1.1

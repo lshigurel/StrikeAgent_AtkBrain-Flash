@@ -10,14 +10,12 @@ import { colors } from "../theme";
 import { listStatusOf } from "../projectStatus";
 import { useT } from "../i18n";
 
-function trackOf(p: Project): "redteam" | "ctf" | "src" {
-  const tr = (p.config as any)?.track;
-  const obj = (p.config as any)?.objective;
-  if (tr === "src" || obj === "src") return "src";
-  if (tr === "ctf") return "ctf";
-  if (p.kind === "benchmark") return "ctf";
-  if (obj === "flag") return "ctf";
-  return "redteam";
+function trackOf(p: Project): "agent" | "ctf" {
+  const tr = String((p.config as any)?.track || "").toLowerCase();
+  const obj = String((p.config as any)?.objective || "").toLowerCase();
+  if (tr === "ctf" || obj === "flag" || obj === "ctf") return "ctf";
+  if (p.kind === "benchmark" && !tr && !obj) return "ctf";
+  return "agent";
 }
 
 type BatchAction = "start" | "stop" | "delete";
@@ -60,6 +58,35 @@ export function ProjectsPage() {
       setSelected((old) => new Set([...old, ...paged.map((p) => p.id)]));
     }
   };
+  const archiveSelected = async () => {
+    const ids = [...selected];
+    if (!ids.length) return;
+    setBusy(true);
+    setBatchErr("");
+    try {
+      await api.archiveProjects(ids);
+      setSelected(new Set());
+      load();
+    } catch (e: any) {
+      setBatchErr(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const saveTemplateSelected = async () => {
+    const id = [...selected][0];
+    if (!id) return;
+    setBusy(true);
+    setBatchErr("");
+    try {
+      await api.saveProjectTemplate(id, projects.find((p) => p.id === id)?.name || "");
+      setBatchErr(t("projects.templateSaved"));
+    } catch (e: any) {
+      setBatchErr(String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
   const runBatch = async () => {
     const ids = [...selected]; if (!pendingAction || !ids.length) return;
     setBusy(true);
@@ -92,9 +119,9 @@ export function ProjectsPage() {
   } as Record<string, string>)[key] || key;
   return <div className="page-container projects-page">
     <div ref={heroRef} className="spread" style={{ alignItems: "flex-end", marginBottom: 26 }}><div><p className="eyebrow">PROJECTS</p><h1>{t("projects.title")}</h1><p className="muted" style={{ marginTop: 8 }}>{t("projects.subtitle")}</p></div><button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ {t("shell.newProject")}</button></div>
-    <section className="project-list-toolbar"><input className="input project-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("projects.search")} /><Filter value={kind} onChange={setKind} options={[["all", t("projects.kindAll")], ["single", t("projects.kindSingle")], ["cluster", t("projects.kindCluster")]]} /><Filter value={track} onChange={setTrack} options={[["all", t("projects.trackAll")], ["agent", t("projects.trackAgent")], ["ctf", "CTF"], ["src", "SRC"]]} /></section>
+    <section className="project-list-toolbar"><input className="input project-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("projects.search")} /><Filter value={kind} onChange={setKind} options={[["all", t("projects.kindAll")], ["single", t("projects.kindSingle")], ["cluster", t("projects.kindCluster")]]} /><Filter value={track} onChange={setTrack} options={[["all", t("projects.trackAll")], ["agent", t("projects.trackAgent")], ["ctf", "CTF"]]} /></section>
     <div className="status-filters">{STATUS_KEYS.map((key) => <button key={key} className={status === key ? "active" : ""} onClick={() => setStatus(key)}>{statusFilterLabel(key)} <b>{key === "all" ? projects.length : projects.filter((p) => statusOf(p) === key).length}</b></button>)}</div>
-    <div className="batch-toolbar"><span className="muted">{t("projects.selected", { n: selected.size, total: visible.length })}</span><button className="btn btn-secondary btn-sm" onClick={selectAll} disabled={!visible.length || busy}>{t("projects.selectFiltered")}</button><button className="btn btn-secondary btn-sm" onClick={() => setSelected(new Set())} disabled={!selected.size || busy}>{t("projects.clearSelect")}</button><div style={{ flex: 1 }} /><button className="btn btn-primary btn-sm" onClick={() => setPendingAction("start")} disabled={!selected.size || busy}>{t("projects.batchStart")}</button><button className="btn btn-secondary btn-sm" onClick={() => setPendingAction("stop")} disabled={!selected.size || busy}>{t("projects.batchStop")}</button><button className="btn btn-danger btn-sm" onClick={() => setPendingAction("delete")} disabled={!selected.size || busy}>{t("projects.batchDelete")}</button></div>
+    <div className="batch-toolbar"><span className="muted">{t("projects.selected", { n: selected.size, total: visible.length })}</span><button className="btn btn-secondary btn-sm" onClick={selectAll} disabled={!visible.length || busy}>{t("projects.selectFiltered")}</button><button className="btn btn-secondary btn-sm" onClick={() => setSelected(new Set())} disabled={!selected.size || busy}>{t("projects.clearSelect")}</button><div style={{ flex: 1 }} /><button className="btn btn-primary btn-sm" onClick={() => setPendingAction("start")} disabled={!selected.size || busy}>{t("projects.batchStart")}</button><button className="btn btn-secondary btn-sm" onClick={() => setPendingAction("stop")} disabled={!selected.size || busy}>{t("projects.batchStop")}</button><button className="btn btn-secondary btn-sm" onClick={() => { void archiveSelected(); }} disabled={!selected.size || busy}>{t("projects.archive")}</button><button className="btn btn-secondary btn-sm" onClick={() => { void saveTemplateSelected(); }} disabled={selected.size !== 1 || busy}>{t("projects.saveTemplate")}</button><button className="btn btn-danger btn-sm" onClick={() => setPendingAction("delete")} disabled={!selected.size || busy}>{t("projects.batchDelete")}</button></div>
     {batchErr ? <p className="error-text" style={{ margin: "8px 0 0" }}>{batchErr}</p> : null}
     <div className="project-table-wrap"><table className="project-table"><thead><tr><th><input type="checkbox" checked={pageAllSelected} onChange={togglePage} /></th><th>{t("projects.colName")}</th><th>{t("projects.colKind")}</th><th>{t("projects.colStatus")}</th><th>{t("projects.colNodes")}</th><th>{t("projects.colServices")}</th><th>{t("projects.colHigh")}</th><th>{t("projects.colCritical")}</th><th>{t("projects.colUpdated")}</th></tr></thead><tbody>{paged.map((p) => <ProjectRow key={p.id} p={p} selected={selected.has(p.id)} onToggle={() => toggle(p.id)} onRename={() => setRename(p)} />)}</tbody></table>{!visible.length && <div className="empty-list">{t("projects.empty")}</div>}</div>
     {visible.length > 0 && <PaginationBar total={visible.length} page={curPage} pageSize={pageSize} onPage={setPage} onPageSize={setPageSize} />}
@@ -109,9 +136,9 @@ function ProjectRow({ p, selected, onToggle, onRename }: { p: Project; selected:
   const { t } = useT();
   const nav = useNavigate(); const s: any = p.stats || {}; const color: Record<string, string> = { running: colors.success, completed: colors.primary, idle: colors.mutedSoft, error: colors.error, stopped: colors.muted };
   const track = trackOf(p);
-  const trackText = track === "ctf" ? "CTF" : track === "src" ? "SRC" : t("projects.trackAgent");
-  const kindText = p.kind === "single" ? t("projects.single") : p.kind === "benchmark" ? (track === "src" ? t("projects.srcCluster") : t("projects.ctfCluster")) : t("projects.cluster");
-  const subText = p.target || (p.kind === "benchmark" ? (track === "src" ? t("projects.srcGlue") : t("projects.ctfBench")) : t("projects.multiAsset"));
+  const trackText = track === "ctf" ? "CTF" : t("projects.trackAgent");
+  const kindText = p.kind === "single" ? t("projects.single") : p.kind === "benchmark" ? (track === "agent" ? t("projects.srcCluster") : t("projects.ctfCluster")) : t("projects.cluster");
+  const subText = p.target || (p.kind === "benchmark" ? (track === "agent" ? t("projects.srcGlue") : t("projects.ctfBench")) : t("projects.multiAsset"));
   const listStatus = statusOf(p);
   const listStatusText = ({
     all: t("projects.statusAll"),
@@ -122,7 +149,7 @@ function ProjectRow({ p, selected, onToggle, onRename }: { p: Project; selected:
     error: t("projects.statusError"),
     queued: t("status.queued"),
   } as Record<string, string>)[listStatus] || listStatus;
-  return <tr className={selected ? "selected" : ""} onClick={() => nav(`/project/${p.id}`)}><td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selected} onChange={onToggle} /></td><td><strong>{p.name}</strong><span className="table-sub mono">{subText}</span></td><td><span className="badge badge-pill">{kindText}</span><span className="table-sub">{trackText}</span></td><td><span className="row" style={{ gap: 6 }}><span className="pulse-dot" style={{ background: color[listStatus] || colors.muted }} />{listStatusText}</span></td><td>{s.nodes || 0}</td><td>{s.services || 0}</td><td>{s.high || 0}</td><td className={s.critical ? "danger-number" : ""}>{s.critical || 0}</td><td><span className="table-sub">{new Date((p.updated_at || p.created_at) * 1000).toLocaleString()}</span><button className="row-rename" onClick={(e) => { e.stopPropagation(); onRename(); }}>{t("common.edit")}</button></td></tr>;
+  return <tr className={selected ? "selected" : ""} onClick={() => nav(`/project/${p.id}`)}><td onClick={(e) => e.stopPropagation()}><input type="checkbox" checked={selected} onChange={onToggle} /></td><td><strong>{p.name}</strong>{p.archived ? <span className="table-sub"> {t("projects.archived")}</span> : null}<span className="table-sub mono">{subText}</span></td><td><span className="badge badge-pill">{kindText}</span><span className="table-sub">{trackText}</span></td><td><span className="row" style={{ gap: 6 }}><span className="pulse-dot" style={{ background: color[listStatus] || colors.muted }} />{listStatusText}</span></td><td>{s.nodes || 0}</td><td>{s.services || 0}</td><td>{s.high || 0}</td><td className={s.critical ? "danger-number" : ""}>{s.critical || 0}</td><td><span className="table-sub">{new Date((p.updated_at || p.created_at) * 1000).toLocaleString()}</span><button className="row-rename" onClick={(e) => { e.stopPropagation(); onRename(); }}>{t("common.edit")}</button></td></tr>;
 }
 function BatchConfirm({ action, count, projects, onClose, onConfirm, busy }: { action: BatchAction; count: number; projects: Project[]; onClose: () => void; onConfirm: () => void; busy: boolean }) {
   const { t } = useT();
@@ -160,7 +187,7 @@ function targetLines(text: string): string[] {
 function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const { t } = useT();
   const nav = useNavigate();
-  const [track, setTrack] = useState<"redteam" | "ctf" | "src">("redteam");
+  const [track, setTrack] = useState<"agent" | "ctf">("agent");
   const [ctfType, setCtfType] = useState<CtfType>("web");
   const [flagCount, setFlagCount] = useState("1");
   const [name, setName] = useState("");
@@ -176,7 +203,7 @@ function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
   const importPoll = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    api.settings().then((s) => setHardStops(s?.defaults?.hard_stop || {})).catch(() => {});
+    api.settings().then((s: any) => setHardStops(s?.defaults?.hard_stop || {})).catch(() => {});
   }, []);
 
   const enterProject = (id: string) => {
@@ -243,7 +270,7 @@ function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
           phase: "merge",
           done: 0,
           total: lines.length,
-          message: t("projects.mergingHost"),
+          message: t("projects.mergingZone"),
         });
       }
       const p: any = await api.createProject(body);
@@ -275,16 +302,14 @@ function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
     onClose();
   };
 
-  const stopKey = track === "ctf" ? "flag" : track === "src" ? "src" : "redteam";
+  const stopKey = track === "ctf" ? "flag" : "redteam";
   const stop = hardStops[stopKey];
   const targetCount = targetLines(targets).length;
-  const trackHint = track === "redteam"
-    ? t("projects.hintRed")
-    : track === "ctf"
-      ? t("projects.hintCtfSingle")
-      : targetCount > 1
-        ? t("projects.hintSrcCluster")
-        : t("projects.hintSrcSingle");
+  const trackHint = track === "ctf"
+    ? t("projects.hintCtfSingle")
+    : targetCount > 1
+      ? t("projects.hintSrcCluster")
+      : t("projects.hintRed");
   const typeSummary: Record<CtfType, string> = {
     web: t("projects.ctfWeb"),
     pwn: t("projects.ctfPwn"),
@@ -303,16 +328,14 @@ function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
   return (
     <Modal title={t("projects.createTitle")} onClose={handleClose} wide>
       <div className="create-entries">
-        <button type="button" className={`btn ${track === "redteam" ? "btn-primary" : "btn-secondary"}`} onClick={() => setTrack("redteam")}>{t("projects.entryAgent")}</button>
+        <button type="button" className={`btn ${track === "agent" ? "btn-primary" : "btn-secondary"}`} onClick={() => setTrack("agent")}>{t("projects.entryAgent")}</button>
         <button type="button" className={`btn ${track === "ctf" ? "btn-primary" : "btn-secondary"}`} onClick={() => setTrack("ctf")}>{t("projects.entryCtf")}</button>
-        <button type="button" className={`btn ${track === "src" ? "btn-primary" : "btn-secondary"}`} onClick={() => setTrack("src")}>{t("projects.entrySrc")}</button>
       </div>
       <span style={{ fontSize: 12, color: "var(--muted)", marginTop: 8, display: "block", lineHeight: 1.55 }}>
         {trackHint}
         {stop?.label ? ` ${stop.label}` : ""}
         {(stop?.conditions || []).map((c) => <div key={c}>· {c}</div>)}
       </span>
-
       {track === "ctf" && (
         <div className="field" style={{ marginTop: 14 }}>
           <span>{t("projects.ctfType")}</span>
@@ -368,7 +391,6 @@ function CreateModal({ onClose, onCreated }: { onClose: () => void; onCreated: (
         <span>{t("projects.name")}</span>
         <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder={t("projects.namePhSingle")} />
       </label>
-
       <div className="create-split" style={{ marginTop: 12 }}>
         <div className="field">
           <span>{t("projects.targetBox")}</span>

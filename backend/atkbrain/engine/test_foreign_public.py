@@ -21,9 +21,10 @@ class ForeignPublicHostTests(unittest.TestCase):
             unauthorized_public_host("static.zenn.studio", self.scope, primary="zenn.dev")
         )
 
-    def test_same_registrable_allowed(self) -> None:
-        for h in ("zenn.dev", "www.zenn.dev", "info.zenn.dev"):
-            self.assertIsNone(
+    def test_only_written_host_allowed(self) -> None:
+        self.assertIsNone(unauthorized_public_host("zenn.dev", self.scope, primary="zenn.dev"))
+        for h in ("www.zenn.dev", "info.zenn.dev"):
+            self.assertIsNotNone(
                 unauthorized_public_host(h, self.scope, primary="zenn.dev"), h,
             )
 
@@ -67,7 +68,7 @@ class ForeignPublicHostTests(unittest.TestCase):
 
     def test_other_job_object_same_rule(self) -> None:
         s = Scope(targets=["hjkgaming.com"], allow_subdomains=False, mode="strict")
-        self.assertIsNone(
+        self.assertIsNotNone(
             unauthorized_public_host("www.hjkgaming.com", s, primary="hjkgaming.com")
         )
         for h in ("embed.zenn.studio", "evil.example.net", "cdn.other.io"):

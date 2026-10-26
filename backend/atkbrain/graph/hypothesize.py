@@ -153,7 +153,8 @@ _INFO_DANGER_RE = re.compile(
 # 文件投递面：下载/附件/路径参数。不写某题路径或 payload。
 _FILE_DELIVERY_RE = re.compile(
     r"\bdownload\b|\battachment\b|\breadfile\b|\bsendfile\b|\bsend_file\b|"
-    r"filepath|file_path|fileid|file_id|"
+    r"filepath|file_path|fileid|file_id|localfile|local_file|"
+    r"\bfilename\b|\blfi\b|"
     r"任意文件|文件下载|附件下载|路径穿越|path.?traversal|"
     r"[?&](?:file|filename|filepath|path|doc|document|attachment)=|"
     r"/(?:file|files|download|attach|attachment|export)(?:\.[a-z0-9]+)?",
@@ -172,8 +173,8 @@ _IMPACT_LADDER = {
     "info_leak": "泄露片段 → 覆盖相关只读接口与样本，禁止拖全量",
     "config_leak": "配置泄露 → 本机只读鉴权差分，禁止改配",
     "key_leak": "密钥泄露 → 本机只读鉴权差分证明未授权数据",
-    "ssrf": "能打内网 → 具体主机（登录页/横幅/目标响应里的地址）才 report_pivot_capability；探测地址和超时 oracle 不要扩网；经 SSRF 参数打内网敏感面；禁止 Kali 直连",
-    "ssrf_internal": "能打内网 → 具体主机才扩 Scope；链路本地/云元数据/超时 oracle 只当探测；经 SSRF 打从目标响应看见的内网口；禁止 Kali 直连",
+    "ssrf": "能打内网 → 具体主机（登录页/横幅/目标响应里的地址）才 report_pivot_capability；探测地址和超时 oracle 不要扩网；经 SSRF 参数打内网敏感面；禁止 本机直连",
+    "ssrf_internal": "能打内网 → 具体主机才扩 Scope；链路本地/云元数据/超时 oracle 只当探测；经 SSRF 打从目标响应看见的内网口；禁止 本机直连",
     "sqli": "证库名/用户 → 只读 SELECT 一条敏感样本；禁止 DROP/DELETE/INSERT/UPDATE/拖全表",
     "db_access": "有库面 → 只读一条敏感样本，禁止拖全表",
     "idor": "单条越权 → 按对象类型覆盖敏感读，不要脚本扫穿全部 ID，禁止写",
@@ -743,11 +744,11 @@ def _looks_like_data_plane_dsn(blob: str) -> bool:
 def _data_plane_via_app_intent(key: str, title: str, node: dict, obj: str, sev: str) -> IntentIn:
     desc = (
         f"把 {title} 里的库/缓存 DSN 当成「经应用碰数据面」："
-        f"经已验证 SSRF/gopher 或跳板隧道碰 db_host，禁止无跳板 Kali 直连内网库，不要把 RDS IP 建成新子项目。"
+        f"经已验证 SSRF/gopher 或跳板隧道碰 db_host，禁止无跳板 本机直连内网库，不要把 RDS IP 建成新子项目。"
     )
     return _mk(
         key, "data_plane_via_app", desc,
-        rationale="红队数据面经应用/跳板隧道，不是无跳板 Kali 直连",
+        rationale="红队数据面经应用/跳板隧道，不是无跳板 本机直连",
         est=0.74, severity=sev or "high", boost=0.14, node=node,
     )
 
@@ -853,6 +854,162 @@ _OBJECT_STORE_SIDETRACK_RE = re.compile(
     r"方法矩阵|method[\s_-]*matrix|方法枚举|verb\s*enum",
     re.I,
 )
+
+
+_WILDCARD_HOME_RE = re.compile(
+    r"通配映射|未知.{0,16}action.{0,24}首页|首页.{0,16}\d{4,6}\s*B",
+    re.I,
+)
+# 把页面/JS 名单写成全集，或把已知目录穿不过写成文件面结束。
+_LINKED_ONLY_RE = re.compile(
+    r"前端引用|端点全集|端点清单|仅\s*\d+\s*个|目录枚举收益低|映射面很窄|继续目录枚举",
+)
+_STATIC_TRAVERSAL_CLOSED_RE = re.compile(
+    r"文件面封死|读文件面全否证|静态目录穿越|WEB-INF.{0,12}否证",
+)
+# 枚举面要走完两步：路径对比 + 文件参数对比，光写「差异路径已入库 / 词表结果」不算。
+_ENUM_PATH_DONE_RE = re.compile(
+    r"路径(?:枚举|对比)已完成|unlinked\s+paths?\s+found",
+    re.I,
+)
+_ENUM_FILE_DONE_RE = re.compile(
+    r"文件参数对比已完成|file[_\s-]?param\s+done",
+    re.I,
+)
+# 工具名单独出现不算做完；旁边要有状态码或结果。
+_ENUM_TOOL_RE = re.compile(
+    r"\b(?:ffuf|ferox(?:buster)?|gobuster|dirsearch|wfuzz)\b",
+    re.I,
+)
+_ENUM_TOOL_RESULT_RE = re.compile(
+    r"status\s*[:=]\s*\d{3}|状态码\s*\d{3}|"
+    r"\b(?:301|302|401|403|500)\b.{0,48}\b(?:200|301|302|403|404|500)\b",
+    re.I,
+)
+_REAL_FILE_PARAM_RE = re.compile(
+    r"(?:fileName|localfile|local_file|filepath|file_path|filename)|"
+    r"文件参数|上传接口|下载参数|本地文件|"
+    r"(?:[?&](?:file|filename|filepath|upload|download|doc|document|"
+    r"attach(?:ment)?|image|img|template|include|folder|dir)=)|"
+    r"\b(?:filename|upload|download|attachment|template|include)\s*参数",
+    re.I,
+)
+# 堆栈、OGNL 的 filename 头、设想里的「任何 fileName」都不是已经发现的入口。
+# 「尚未测 / 还没有 / 未对比」这类未验证表述也不算已发现的入口。
+_NOT_A_FILE_POINT_RE = re.compile(
+    r"否证|封死|无上传|不能推断|没有上传|不存在上传|不可达|"
+    r"尚未|未测|还没有|还没|未对比|待测|未做|没测|"
+    r"filename\s*位置|字段名|Content-Type|multipart|假阳性|"
+    r"任何以|载荷矩阵|形式接收",
+    re.I,
+)
+
+
+def _node_blob(node: dict) -> tuple[str, str, str]:
+    title = str(node.get("title") or "")
+    key = str(node.get("key") or "")
+    blob = f"{title} {node.get('detail') or ''} {key}"
+    return title, key, blob
+
+
+def has_real_file_param_point(graph: dict | None) -> bool:
+    """图上已有带文件名、本地文件、路径或上传参数的入口。否证笔记不算。"""
+    for node in (graph or {}).get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        _title, _key, blob = _node_blob(node)
+        if not _REAL_FILE_PARAM_RE.search(blob):
+            continue
+        if _NOT_A_FILE_POINT_RE.search(blob):
+            continue
+        return True
+    return False
+
+
+def path_enum_done(graph: dict | None) -> bool:
+    """枚举面走完：路径对比与文件参数对比都已完成。只提到工具名、只写差异路径都不算。"""
+    path_done = False
+    file_done = False
+    for node in (graph or {}).get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        _title, _key, blob = _node_blob(node)
+        if _ENUM_PATH_DONE_RE.search(blob):
+            path_done = True
+        if _ENUM_FILE_DONE_RE.search(blob):
+            file_done = True
+        if path_done and file_done:
+            return True
+        if _ENUM_TOOL_RE.search(blob) and _ENUM_TOOL_RESULT_RE.search(blob):
+            return True
+    return path_done and file_done
+
+
+def action_surface_incomplete(graph: dict | None, *, http: bool = False) -> bool:
+    """HTTP 面上还没有文件类参数入口、也没有词表差异结果，攻击面就不算列完。
+
+    不看主机名，也不要求笔记写成某几句固定中文。页面名单、通配回首页、
+    已知目录穿不过，都只是同一种未完成。
+    """
+    if has_real_file_param_point(graph) or path_enum_done(graph):
+        return False
+    if http:
+        return True
+    for node in (graph or {}).get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        _title, _key, blob = _node_blob(node)
+        if (
+            _WILDCARD_HOME_RE.search(blob)
+            or _LINKED_ONLY_RE.search(blob)
+            or _STATIC_TRAVERSAL_CLOSED_RE.search(blob)
+        ):
+            return True
+        if re.search(r"https?://|text/html|\b(?:jsp|php|aspx|asp)\b", blob, re.I):
+            return True
+    return False
+
+
+_FORM_ACTION_RE = re.compile(r"/([A-Za-z0-9_\-]+)\.action", re.I)
+_FORM_VARIANT_RE = re.compile(r"/([A-Za-z0-9_\-]+)[!?][A-Za-z0-9_\-]+\.action", re.I)
+_FORM_WILDCARD_FALSE_RE = re.compile(r"通配|不是真实动作|通配回首页", re.I)
+_FORM_CRASH_RE = re.compile(r"\b500\b|堆栈|异常|报错|空指针", re.I)
+
+
+def request_form_gaps(graph: dict | None) -> list[dict[str, object]]:
+    """同族动作里还有没被复用表单的 stem（上游 1.1.0 引用了本函数但漏提交实现）。
+
+    规则：
+    - danger 节点 + 报错/500 → 记一个缺口候选，stem 取动作名（/alpha.action → alpha）
+    - 存在 <stem>!<x>.action / <stem>?<x>.action 的成功变体 → 该 stem 已覆盖，不算缺口
+    - 笔记写明通配回首页 / 不是真实动作的 stem → 直接否证，不算缺口
+    """
+    wild: set[str] = set()
+    covered: set[str] = set()
+    broken: dict[str, dict[str, object]] = {}
+    for node in (graph or {}).get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        title, key, blob = _node_blob(node)
+        if _FORM_WILDCARD_FALSE_RE.search(blob):
+            m = _FORM_ACTION_RE.search(blob)
+            if m:
+                wild.add(m.group(1).lower())
+            continue
+        if _FORM_VARIANT_RE.search(key):
+            covered.add(_FORM_VARIANT_RE.search(key).group(1).lower())
+            continue
+        if str(node.get("type") or "") not in ("danger", "vuln", "finding"):
+            continue
+        if not _FORM_CRASH_RE.search(blob):
+            continue
+        m = _FORM_ACTION_RE.search(key) or _FORM_ACTION_RE.search(blob)
+        if not m:
+            continue
+        stem = m.group(1).lower()
+        if stem not in broken:
+            broken[stem] = {"stem": stem, "key": key, "title": title, "detail": blob[:400]}
+    return [v for k, v in broken.items() if k not in wild and k not in covered]
 
 
 def looks_like_file_delivery(blob: str, title: str = "", key: str = "") -> bool:
@@ -1126,9 +1283,9 @@ def hypotheses_for_node(
                 rationale="白名单反序列化的下一事件是 gadget 搜索，不是停手",
                 est=0.7, severity=sev, boost=0.1, node=node,
             ))
-        if any(x in blob or x in tags for x in (
-            "download", "read", "include", "path", "lfi", "穿越",
-        )) and not _AUTHZ_HIT_RE.search(f"{title} {blob}"):
+        if looks_like_file_delivery(
+            f"{blob} {' '.join(sorted(tags))}", title, key,
+        ) and not _AUTHZ_HIT_RE.search(f"{title} {blob}"):
             _loot = "配置/源码/flag" if allows_flag else "配置/源码/凭证/敏感数据"
             _loot_r = "文件读可直接转凭证或 flag" if allows_flag else "文件读可直接转凭证或大量数据泄露"
             out.append(_mk(key, "file_read_chain", f"利用 {title} 尝试任意文件读并定位{_loot}",
@@ -1181,11 +1338,11 @@ def hypotheses_for_node(
         if is_rce and not looks_like_local_gate(blob, title):
             if obj == SRC:
                 out.append(_mk(key, "src_next_type",
-                               f"「{title}」命令执行已是高危证据：独立 report_finding 后挖厂商清单下一类，不要转后渗",
-                               rationale="SRC 不以 getshell 收工", est=0.8, severity="critical", boost=0.12, node=node))
+                               f"「{title}」已经是命令执行：report_shell 收工，其它未报漏洞照样 report_finding",
+                               rationale="命令执行后 report_shell 收工", est=0.8, severity="critical", boost=0.12, node=node))
             else:
                 _rce_desc = (f"基于 {title} 的执行能力搜 flag / 提权 / 横向" if allows_flag
-                             else f"基于 {title} 的执行能力做提权 / 横向 / 收数据库与大量数据")
+                             else f"基于 {title} 落地命令执行并 report_shell，其它未报漏洞继续报")
                 out.append(_mk(key, "flag_or_privesc", _rce_desc,
                                rationale="已有 RCE 时应优先收口而不是继续盲扫", est=0.8, severity="critical", boost=0.15, node=node))
         if any(x in blob or x in tags for x in ("file_read", "lfi", "path", "read", "穿越", "include")):
@@ -1217,7 +1374,7 @@ def hypotheses_for_node(
                            rationale="SSRF 入 Scope 不给攻击机路由；直连超时不是入口挂了",
                            est=0.8, severity=sev, boost=0.16, node=node))
             out.append(_mk(key, "ssrf_local_svc",
-                           f"用 {title} 打目标本机只绑回环的 HTTP 服务；配置里 localhost 不能从 Kali 连",
+                           f"用 {title} 打目标本机只绑回环的 HTTP 服务；配置里 localhost 不能从本机直连",
                            rationale="unix socket / bind 127.0.0.1 的库只能从目标侧发起",
                            est=0.74, severity=sev, boost=0.12, node=node))
             out.append(_mk(key, "secret_mount",
@@ -1278,7 +1435,7 @@ def hypotheses_for_node(
             out.append(_mk(
                 key, "fingerprint",
                 f"经已有 SSRF/shell 跳板摸清 {title} 的开放端口、HTTP 标题与服务类型，"
-                "立刻 add_node service/info 挂到该目标下；禁止 Kali 直连该 IP。",
+                "立刻 add_node service/info 挂到该目标下；禁止 本机直连该 IP。",
                 rationale="新内网目标先定性活体并落图，才能打登录/未授权；直连超时是预期",
                 est=0.72, severity="high", boost=0.12, node=node,
             ))
@@ -1304,8 +1461,8 @@ def hypotheses_for_node(
     elif ntype == "foothold":
         if obj == SRC:
             out.append(_mk(key, "src_next_type",
-                           f"立足点 {title} 只当高危证据，按厂商清单挖下一类，不要提权/横向",
-                           rationale="SRC 不转后渗", est=0.72, severity=sev, boost=0.1, node=node))
+                           f"立足点 {title} 已经是命令执行：report_shell 收工，其它未报漏洞照样 report_finding",
+                           rationale="命令执行后 report_shell 收工", est=0.72, severity=sev, boost=0.1, node=node))
         else:
             out.extend([
                 _mk(key, "stabilize", f"巩固立足点 {title}：持久化通道、环境枚举、敏感文件",
@@ -1339,6 +1496,23 @@ def hypotheses_for_node(
         if _info_needs_channel_oracle(blob, title):
             out.extend(_channel_oracle_intents(key, title, node, sev))
             return out
+        if (
+            _WILDCARD_HOME_RE.search(f"{title} {blob}")
+            or _LINKED_ONLY_RE.search(f"{title} {blob}")
+            or _STATIC_TRAVERSAL_CLOSED_RE.search(f"{title} {blob}")
+        ):
+            out.append(_mk(
+                key, "content_enum",
+                f"把 {title} 当阴性对照，不要当成入口已经列完。"
+                "先打开入口 HTML 里的同站内容页，把图片、文件、下载地址建成节点；和首页相同的只当阴性对照。"
+                "第一个 500 或登录页不能代替这些内容页。页面和 JS 里的接口不是服务端全集。"
+                "再用中档词表列同应用路径，和首页同状态、同长度的丢掉；301/302/403/500 或长度不同的逐个建成节点。"
+                "带文件名、路径、上传的入口单独记。静态目录穿不过只否定这次穿越。",
+                rationale="内容页、前端名单和已知目录否证都不关闭未出现在页面上的入口",
+                est=0.74, severity=sev, boost=0.12, node=node,
+            ))
+            if _LINKED_ONLY_RE.search(f"{title} {blob}") or _STATIC_TRAVERSAL_CLOSED_RE.search(f"{title} {blob}"):
+                return out
         if is_negative_conclusion(blob, title) or is_non_asset_info(blob, title):
             return out
         if (
@@ -1366,6 +1540,28 @@ def hypotheses_for_node(
                            rationale="接口信息需落到可验证攻击面", est=0.55, severity=sev, node=node))
         if obj == REDTEAM and _looks_like_data_plane_dsn(blob):
             out.append(_data_plane_via_app_intent(key, title, node, obj, sev))
+
+    # 同族动作复用：图上还有别的 .action 动作时，把已见表单结构套到本文缺口上。
+    # 只取不带 !/? 变体的动作名，避免把 "beta!run" 这类子动作写进建议。
+    if graph and ntype in ("danger", "vuln", "info", "service"):
+        siblings: list[str] = []
+        for other in (graph or {}).get("nodes") or []:
+            if not isinstance(other, dict):
+                continue
+            hit = _FORM_ACTION_RE.search(str(other.get("key") or ""))
+            if not hit:
+                continue
+            stem = hit.group(1).lower()
+            if stem and stem not in siblings:
+                siblings.append(stem)
+        if siblings:
+            out.append(_mk(
+                key, "transfer_form",
+                f"同族动作 {'、'.join(siblings[:4])} 共用表单结构："
+                "把已见的参数名与编码方式套到本文动作再打一轮，再按响应差异扩展",
+                rationale="同族动作的表单与参数通常复用，逐个重挖参数收益低",
+                est=0.6, severity=sev, boost=0.08, node=node,
+            ))
 
     return out
 
@@ -1416,12 +1612,9 @@ def hypotheses_for_finding(finding: Any, node: dict, allows_flag: bool = True,
         if allows_flag:
             _rce = "落地 shell/webshell 并夺旗或提权"
             _why = "执行类 finding 优先收口"
-        elif obj == "src":
-            _rce = "作为高危证据独立上报后继续挖厂商清单下一类，不要转后渗"
-            _why = "SRC 不以 getshell 收工"
         else:
-            _rce = "落地 shell/webshell 并提权/横向/收数据"
-            _why = "执行类 finding 优先收口"
+            _rce = "落地命令执行并 report_shell，同时把其它未报漏洞继续报出来"
+            _why = "agent 测试要把已证实危害做到 getshell"
         out.append(_mk(key, "finding_rce_close", f"基于「{title}」{_rce}",
                        rationale=_why, est=0.82, severity="critical", boost=0.18,
                        evidence_extra=cat, node=node))
@@ -1433,7 +1626,7 @@ def hypotheses_for_finding(finding: Any, node: dict, allows_flag: bool = True,
                        rationale="SSRF 扩容只授权打目标，不授予攻击机路由", est=0.82, severity=sev, boost=0.16,
                        evidence_extra=cat, node=node))
         out.append(_mk(key, "ssrf_local_svc",
-                       f"用「{title}」打目标本机只绑回环的 HTTP 服务；配置里 localhost 不能从 Kali 连",
+                       f"用「{title}」打目标本机只绑回环的 HTTP 服务；配置里 localhost 不能从本机直连",
                        rationale="本机只监听服务必须从 SSRF 所在进程发起", est=0.76, severity=sev, boost=0.12,
                        evidence_extra=cat, node=node))
         out.append(_mk(key, "secret_mount",

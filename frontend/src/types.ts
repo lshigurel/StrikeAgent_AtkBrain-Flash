@@ -96,6 +96,7 @@ export interface Finding {
   report_fix?: string;
   report_pending?: boolean;
   report_state?: "pending" | "writing" | "ready" | string;
+  exclusion_reason?: string;
 }
 
 /** 弹层用的全量详情（含手动步骤与 PoC） */
@@ -178,6 +179,10 @@ export interface Project {
   graph?: Graph;
   run_id?: string;
   hard_stop?: HardStop;
+  category?: string | null;
+  archived?: number;
+  queued_at?: number | null;
+  vendor_id?: string | null;
 }
 
 export interface RTEvent {

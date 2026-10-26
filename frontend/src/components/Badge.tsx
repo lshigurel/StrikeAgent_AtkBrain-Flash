@@ -62,7 +62,15 @@ export function SecondaryVerifyBadge({ done, reviewing, excluded }: { done?: boo
   );
 }
 
-export function RedteamRatingBadge({ rating, reviewing }: { rating?: string; reviewing?: boolean }) {
+const CVSS_BAND_KEY: Record<string, string> = {
+  critical: "badge.cvssCritical",
+  high: "badge.cvssHigh",
+  medium: "badge.cvssMedium",
+  low: "badge.cvssLow",
+  info: "badge.cvssNone",
+};
+
+export function RedteamRatingBadge({ rating, score, reviewing }: { rating?: string; score?: number | null; reviewing?: boolean }) {
   const { t } = useT();
   const s = (rating || "").toLowerCase();
   const key = RT_RATING_KEY[s];
@@ -77,8 +85,12 @@ export function RedteamRatingBadge({ rating, reviewing }: { rating?: string; rev
     );
   }
   const color = s === "critical" || s === "high" ? "var(--error, #c44)" : s === "medium" ? "var(--warning, #d4a017)" : "var(--muted)";
+  const bandKey = CVSS_BAND_KEY[s];
+  const text = typeof score === "number" && Number.isFinite(score) && bandKey
+    ? t("badge.cvssLine", { score: score.toFixed(1), band: t(bandKey) })
+    : t(key);
   return (
-    <span className="kbd" style={{ fontSize: 11, color }}>{t(key)}</span>
+    <span className="kbd" style={{ fontSize: 11, color }}>{text}</span>
   );
 }
 

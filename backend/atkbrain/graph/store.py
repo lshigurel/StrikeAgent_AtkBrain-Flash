@@ -33,6 +33,7 @@ from .model import (
     humanize_node_key,
     infer_node_type_from_key,
     is_critical,
+    is_merged_duplicate_title,
     is_placeholder_node,
     node_is_landed_shell,
     placeholder_node_spec,
@@ -59,6 +60,15 @@ def invalidate_graph_cache(project_id: str | None = None) -> None:
 async def upsert_node(project_id: str, node: NodeIn, run_id: str | None = None) -> dict:
     orig_key = node.key
     node = await _coerce_intranet_target_node(project_id, node)
+    if node.type == "target" and not _target_key_allowed(
+        str(node.key or ""),
+        list(node.tags or []),
+        await _project_entry_host(project_id),
+        set(),
+    ):
+        tags_l = {str(t).lower() for t in (node.tags or [])}
+        fallback = "danger" if any("candidate" in t for t in tags_l) else "info"
+        node = node.model_copy(update={"type": fallback})
     coerced = coerce_declared_node_type(node.key, node.type, node.tags)
     if coerced != node.type:
         node = node.model_copy(update={"type": coerced})
@@ -97,7 +107,17 @@ async def upsert_node(project_id: str, node: NodeIn, run_id: str | None = None) 
         )
         if leftover:
             await _rewire_node_key(project_id, orig_key, node.key)
-    await _autofinding_from_node(project_id, row, run_id)
+    try:
+        await _autofinding_from_node(project_id, row, run_id)
+    except Exception as e:
+        try:
+            await emit(
+                project_id, "log",
+                {"level": "warn", "message": f"漏洞节点未进入复核：{node.key} {e}"[:200]},
+                run_id=run_id,
+            )
+        except Exception:
+            pass
     # 新建或更新非蜜罐节点时派生推理前沿（strategy_key 去重，不会无限膨胀）
     # 入口 target 不派生假说；跳板发现的内网目标要派生侦察，否则不会去摸端口/标题。
     tags_l = {str(t).lower() for t in (node.tags or [])}
@@ -119,7 +139,7 @@ async def upsert_node(project_id: str, node: NodeIn, run_id: str | None = None) 
     return row
 
 
-async def _autofinding_from_node(project_id: str, row: dict, run_id: str | None) -> None:
+async def _autofinding_from_node(project_id: str, row: dict, run_id: str | None) -> bool:
     """高危 vuln 节点自动沉淀为 finding（去重）。
 
     foothold/goal（getshell）不在此自动抬升——由 report_shell 落点。
@@ -127,19 +147,21 @@ async def _autofinding_from_node(project_id: str, row: dict, run_id: str | None)
     """
     from .model import SEVERITY_ORDER
     if row["type"] in ("foothold", "goal"):
-        return
+        return False
     if row["type"] != "vuln":
-        return
+        return False
     tags = _loads(row["tags"]) or []
     if is_placeholder_node(row["key"], row["title"], row["detail"], tags if isinstance(tags, list) else []):
-        return
+        return False
+    if is_merged_duplicate_title(row["title"]):
+        return False
     if not (bool(row["is_rce"]) or SEVERITY_ORDER.get(row["severity"], 0) >= SEVERITY_ORDER["high"]):
-        return
+        return False
     exists = await db.fetchone(
         "SELECT 1 FROM findings WHERE project_id=? AND node_key=?", (project_id, row["key"])
     )
     if exists:
-        return
+        return False
     tags = _loads(row["tags"]) or []
     category = _derive_category(row["type"], tags, bool(row["is_rce"]))
     await add_finding(
@@ -154,6 +176,23 @@ async def _autofinding_from_node(project_id: str, row: dict, run_id: str | None)
         ),
         run_id=run_id,
     )
+    return True
+
+
+async def promote_orphan_vuln_nodes(project_id: str, run_id: str | None = None) -> int:
+    """图上已有高危漏洞、但没进漏洞库的，补成待复核条目。"""
+    rows = await db.fetchall(
+        "SELECT * FROM nodes WHERE project_id=? AND type='vuln'",
+        (project_id,),
+    )
+    made = 0
+    for row in rows:
+        try:
+            if await _autofinding_from_node(project_id, row, run_id):
+                made += 1
+        except Exception:
+            continue
+    return made
 
 
 def _derive_category(node_type: str, tags: list[str], is_rce: bool) -> str:
@@ -289,6 +328,58 @@ async def fill_source_node(
         ),
         run_id=run_id,
     )
+
+
+async def demote_false_targets(project_id: str) -> int:
+    """单目标项目只保留用户给的入口。同一主机上的页面不是目标。
+
+    另一台地址要成为目标，必须是漏洞跳过去的：SSRF、命令执行，或指向它的 PIVOTS_TO。
+    """
+    primary = await _project_entry_host(project_id)
+    rows = await db.fetchall(
+        "SELECT key, type, tags, title FROM nodes WHERE project_id=? AND type='target'",
+        (project_id,),
+    )
+    if not rows:
+        return 0
+    pivots = await db.fetchall(
+        "SELECT dst FROM edges WHERE project_id=? AND relation='PIVOTS_TO'",
+        (project_id,),
+    )
+    pivot_dst = {str(r["dst"] or "") for r in pivots or []}
+    changed = 0
+    for row in rows:
+        key = str(row["key"] or "")
+        tags = _loads(row["tags"]) if not isinstance(row["tags"], list) else list(row["tags"] or [])
+        if not isinstance(tags, list):
+            tags = []
+        if _target_key_allowed(key, tags, primary, pivot_dst):
+            continue
+        tags_l = {str(t).lower() for t in tags}
+        new_type = "danger" if any("candidate" in t or t in {"sqli", "xss", "lfi", "rce", "upload"} for t in tags_l) else "info"
+        await db.execute(
+            "UPDATE nodes SET type=?, updated_at=? WHERE project_id=? AND key=?",
+            (new_type, now(), project_id, key),
+        )
+        changed += 1
+    if changed:
+        invalidate_graph_cache(project_id)
+    return changed
+
+
+def _target_key_allowed(key: str, tags: list, primary: str, pivot_dst: set[str]) -> bool:
+    if not key.startswith("target:"):
+        return False
+    host = key.split(":", 1)[1].split("/")[0].strip().lower().rstrip(".")
+    if not host:
+        return False
+    if primary and host == primary and key == f"target:{primary}":
+        return True
+    if primary and host == primary:
+        return False
+    if key in pivot_dst:
+        return True
+    return _vuln_pivot_tags(tags)
 
 
 async def repair_prefix_type_stubs(project_id: str, run_id: str | None = None) -> int:
@@ -760,6 +851,12 @@ async def _is_peer_entry_host(project_id: str, host: str) -> bool:
     return host in {str(p or "").split(":")[0].strip().lower().rstrip(".") for p in peers}
 
 
+def _vuln_pivot_tags(tags: list | None) -> bool:
+    """只有漏洞跳过去的地址才是新目标：SSRF、命令执行，或其它已标成跳板的洞。"""
+    tags_l = {str(t).lower() for t in (tags or [])}
+    return bool(tags_l & {"ssrf", "via-live", "getshell", "shell", "rce", "vuln-pivot"})
+
+
 def _should_promote_intranet_host(host: str, tags: list | None, primary: str) -> bool:
     """跳板发现的内网地址升成 target；入口、邻题、同机 vhost、纯线索不升。"""
     host = (host or "").strip().lower().split(":")[0].rstrip(".")
@@ -774,9 +871,7 @@ def _should_promote_intranet_host(host: str, tags: list | None, primary: str) ->
         return False
     if "clue-only" in tags_l and "via-live" not in tags_l:
         return False
-    if tags_l & {"lateral", "pivot", "internal", "scope-expanded"}:
-        return True
-    return _is_rfc1918(host)
+    return _vuln_pivot_tags(tags)
 
 
 async def _coerce_intranet_target_node(project_id: str, node: NodeIn) -> NodeIn:
@@ -1017,7 +1112,7 @@ async def ensure_host_target(
     elif clue_only:
         want.extend([TAG_CLUE, "internal", f"host:{host}"])
     else:
-        want.extend(["internal", "pivot", "lateral", f"host:{host}"])
+        want.extend(["internal", f"host:{host}"])
     seen_t: list[str] = []
     for t in want:
         s = str(t or "").strip()
@@ -1025,7 +1120,7 @@ async def ensure_host_target(
             seen_t.append(s)
     if live is True:
         seen_t = [t for t in seen_t if t != TAG_CLUE]
-    if clue_only:
+    if clue_only or not _vuln_pivot_tags(seen_t):
         ikey = f"info:host:{host}"
         existing = await db.fetchone(
             "SELECT key FROM nodes WHERE project_id=? AND key=?", (project_id, ikey)
@@ -1881,6 +1976,7 @@ async def ensure_lateral_pivots(project_id: str, run_id: str | None = None) -> i
                 project_id, host,
                 title=f"内网目标 {host}",
                 run_id=run_id,
+                live=True,
             )
 
             if host not in pivoted_hosts and host in verified_hosts:
@@ -2197,9 +2293,14 @@ async def add_edge(project_id: str, edge: EdgeIn, run_id: str | None = None) -> 
 
 
 async def add_finding(project_id: str, finding: FindingIn, run_id: str | None = None) -> dict:
-    from .verify import VerifyResult, accept_secondary_review, secondary_claim_failed, verify_finding
+    from .verify import (
+        VerifyResult, accept_secondary_review, is_real_secondary_failure,
+        merge_verification_status, secondary_claim_failed, verify_finding,
+    )
 
-    cat, sev, rating = coerce_unproven_rce_claim(
+    incoming_rating = normalize_redteam_rating(getattr(finding, "redteam_rating", None))
+    cvss_locked = finding.cvss is not None and bool(incoming_rating)
+    cat, sev, capped = coerce_unproven_rce_claim(
         category=finding.category,
         severity=finding.severity,
         redteam_rating=getattr(finding, "redteam_rating", None),
@@ -2211,6 +2312,7 @@ async def add_finding(project_id: str, finding: FindingIn, run_id: str | None = 
     )
     finding.category = cat
     finding.severity = sev  # type: ignore[assignment]
+    rating = incoming_rating if cvss_locked else capped
     if rating is not None:
         finding.redteam_rating = rating
     vr = await verify_finding(finding, project_id=project_id)
@@ -2230,6 +2332,24 @@ async def add_finding(project_id: str, finding: FindingIn, run_id: str | None = 
             )
     except Exception:
         pass
+    if _unproven_hint(finding) and vr.status != "excluded":
+        vr = VerifyResult(
+            status="pending",
+            reason="unproven_hint",
+            proof_type=vr.proof_type,
+            proof_canary=vr.proof_canary,
+            proof_url=vr.proof_url,
+            proof_detail=vr.proof_detail,
+        )
+    if vr.status == "pending":
+        if finding.severity in ("high", "critical"):
+            finding.severity = "medium"
+            sev = "medium"
+        if (rating or "") in ("high", "critical"):
+            rating = "medium"
+            finding.redteam_rating = "medium"
+        if finding.cvss is not None and float(finding.cvss) >= 7:
+            finding.cvss = None
     rating = normalize_redteam_rating(getattr(finding, "redteam_rating", None)) or rating
     rating_why = (getattr(finding, "redteam_rating_rationale", None) or "").strip() or None
     secondary = 1 if getattr(finding, "secondary_verified", False) else 0
@@ -2273,20 +2393,27 @@ async def add_finding(project_id: str, finding: FindingIn, run_id: str | None = 
         prev_st = str(existing.get("verification_status") or "")
         prev_vat = existing.get("verified_at")
         ts = now()
-        if wants_exclude:
+        real_fail = wants_exclude and is_real_secondary_failure(rating_why)
+        new_st, keep_sec = merge_verification_status(
+            prev_st,
+            bool(prev_sec),
+            "excluded" if real_fail else (finding.verification_status if wants_exclude else None),
+            bool(secondary) and not real_fail,
+            rating_why,
+        )
+        if new_st == "excluded":
             secondary = 0
-            new_st = "excluded"
             verified_at = prev_vat
             stored_detail = vr.proof_detail
-        else:
-            vr = accept_secondary_review(vr, bool(secondary or prev_sec))
+        elif new_st == "verified" and keep_sec:
+            vr = accept_secondary_review(vr, True)
             stored_detail = vr.proof_detail
-            if vr.status == "verified":
-                new_st = "verified"
-                verified_at = ts if prev_st != "verified" else prev_vat
-            else:
-                new_st = prev_st or vr.status
-                verified_at = prev_vat
+            verified_at = ts if prev_st != "verified" else prev_vat
+            secondary = 1
+        else:
+            stored_detail = vr.proof_detail
+            verified_at = prev_vat
+            secondary = 1 if keep_sec else 0
         await db.execute(
             """UPDATE findings SET evidence=COALESCE(?, evidence),
                    poc_curl=COALESCE(?, poc_curl), poc_python=COALESCE(?, poc_python),
@@ -2295,6 +2422,7 @@ async def add_finding(project_id: str, finding: FindingIn, run_id: str | None = 
                    verification_status=?, verified_at=COALESCE(?, verified_at),
                    secondary_verified=?, redteam_rating=COALESCE(?, redteam_rating),
                    redteam_rating_rationale=COALESCE(?, redteam_rating_rationale),
+                   cvss=COALESCE(?, cvss),
                    report_summary=COALESCE(?, report_summary),
                    report_impact=COALESCE(?, report_impact),
                    report_rating=COALESCE(?, report_rating),
@@ -2304,8 +2432,8 @@ async def add_finding(project_id: str, finding: FindingIn, run_id: str | None = 
                WHERE id=?""",
             (finding.evidence, finding.poc_curl, finding.poc_python,
              vr.proof_type, vr.proof_canary, vr.proof_url, stored_detail,
-             new_st, verified_at, 0 if wants_exclude else (1 if (secondary or prev_sec) else 0),
-             rating, rating_why, *page_vals, cat, sev, fid),
+             new_st, verified_at, secondary,
+             rating, rating_why, finding.cvss, *page_vals, cat, sev, fid),
         )
     else:
         if wants_exclude:
@@ -2356,7 +2484,34 @@ async def add_finding(project_id: str, finding: FindingIn, run_id: str | None = 
             )
             await derive_intents_for_finding(project_id, finding, nrow, run_id=run_id)
     invalidate_graph_cache(project_id)
+    try:
+        from ..assets import attach_finding_assets
+        await attach_finding_assets(
+            project_id, fid, proof_url=finding.proof_url or vr.proof_url, evidence=finding.evidence,
+        )
+    except Exception:
+        pass
+    try:
+        from ..notify import enqueue_finding
+        await enqueue_finding(project_id, data)
+    except Exception:
+        pass
     return data
+
+
+_UNPROVEN_HINT_RE = re.compile(
+    r"(版本对应|版本匹配|疑似|可能存在|参数可疑|n-?day)",
+    re.I,
+)
+
+
+def _unproven_hint(finding: FindingIn) -> bool:
+    if (finding.poc_curl or "").strip() or (finding.poc_python or "").strip():
+        return False
+    if (getattr(finding, "proof_canary", None) or "").strip():
+        return False
+    blob = " ".join(x or "" for x in (finding.title, finding.description, finding.evidence))
+    return bool(_UNPROVEN_HINT_RE.search(blob))
 
 
 async def _find_duplicate_finding(project_id: str, finding: FindingIn) -> dict | None:
@@ -2500,6 +2655,12 @@ async def add_intent(project_id: str, intent: IntentIn, run_id: str | None = Non
         (iid, project_id, _dumps(intent.from_keys), intent.description, intent.rationale,
          float(intent.est_success), status, sk, ev, priority, 0, None, None, None, ts, ts),
     )
+    deps = [str(x) for x in (getattr(intent, "depends_on", None) or []) if str(x or "").strip()]
+    if deps:
+        await db.execute(
+            "UPDATE intents SET depends_on=? WHERE id=?",
+            (_dumps(deps), iid),
+        )
     row = await db.fetchone("SELECT * FROM intents WHERE id=?", (iid,))
     await emit(project_id, "intent", _serialize_intent(row), run_id=run_id)
     invalidate_graph_cache(project_id)
@@ -2668,18 +2829,59 @@ async def derive_intents_for_finding(
     return created
 
 
+async def _intent_deps_ready(project_id: str, item: dict) -> bool:
+    deps = item.get("depends_on") or []
+    if isinstance(deps, str):
+        deps = _loads(deps) or []
+    if not isinstance(deps, list) or not deps:
+        return True
+    for iid in deps:
+        row = await db.fetchone(
+            "SELECT status, from_keys FROM intents WHERE id=? AND project_id=?",
+            (str(iid), project_id),
+        )
+        if not row:
+            return False
+        if str(row.get("status") or "") == "verified":
+            continue
+        keys = _loads(row.get("from_keys")) or []
+        if not keys:
+            return False
+        found = False
+        for key in keys:
+            node = await db.fetchone(
+                "SELECT id FROM nodes WHERE project_id=? AND key=?",
+                (project_id, key),
+            )
+            if node:
+                found = True
+                break
+        if not found:
+            return False
+    return True
+
+
 async def list_open_intents(project_id: str, limit: int = 20) -> list[dict]:
     rows = await db.fetchall(
         """SELECT * FROM intents
            WHERE project_id=? AND status IN ('open','deferred','active')
+             AND IFNULL(paused,0)=0
            ORDER BY
              CASE status WHEN 'active' THEN 0 WHEN 'open' THEN 1 ELSE 2 END,
              COALESCE(priority, est_success) DESC,
              created_at ASC
            LIMIT ?""",
-        (project_id, limit),
+        (project_id, max(limit * 4, limit)),
     )
-    return [_serialize_intent(r) for r in rows]
+    out: list[dict] = []
+    for row in rows:
+        item = _serialize_intent(row)
+        if not await _intent_deps_ready(project_id, item):
+            continue
+        out.append(item)
+        if len(out) >= limit:
+            break
+    return out
 
 
 async def list_disproved_intents(project_id: str, limit: int = 12) -> list[dict]:
@@ -3236,6 +3438,8 @@ def _serialize_finding(row: dict) -> dict:
         "report_rating": _clip(_get("report_rating"), 1500),
         "report_repro": _clip(_get("report_repro"), 1500),
         "report_fix": _clip(_get("report_fix"), 1500),
+        "disposition": _get("disposition"),
+        "retest_conclusion": _get("retest_conclusion"),
     }
 
 
@@ -3256,6 +3460,9 @@ def _serialize_intent(row: dict) -> dict:
         "active_run_id": row.get("active_run_id"),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
+        "paused": int(row.get("paused") or 0),
+        "pending_steer": row.get("pending_steer"),
+        "depends_on": _loads(row.get("depends_on")) or [],
     }
 
 
@@ -3484,6 +3691,7 @@ async def get_graph(project_id: str, *, heal: bool = False) -> dict:
             return hit[1]
     try:
         await repair_prefix_type_stubs(project_id)
+        await demote_false_targets(project_id)
     except Exception:
         pass
     if heal:
@@ -3666,13 +3874,13 @@ async def list_library_findings(
         item["reviewing_rating"] = bool(rate and rate.get("status") == "running")
         matched.append(item)
         track_counts["all"] += 1
-        if ptr in ("redteam", "src"):
+        if ptr in ("agent", "redteam", "src"):
             track_counts["agent"] += 1
-        if ptr in track_counts:
+        elif ptr in track_counts:
             track_counts[ptr] += 1
 
-    if tn == "agent":
-        filtered = [x for x in matched if x.get("project_track") in ("redteam", "src")]
+    if tn in ("agent", "redteam", "src"):
+        filtered = [x for x in matched if x.get("project_track") in ("agent", "redteam", "src")]
     else:
         filtered = [x for x in matched if (not tn or x.get("project_track") == tn)]
     counts = {"total": 0, "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}

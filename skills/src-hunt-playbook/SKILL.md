@@ -23,7 +23,7 @@ Pi 用内置 `read` 加载本文件；之后作业只用扩展工具 `run_cmd` /
 **禁止破坏业务**：不准 DROP/DELETE FROM/TRUNCATE，不准删业务文件/订单；SQLi 只读证明；删除类只动自己上传的测试文件。
 
 不报：phpinfo/指纹/Banner/目录列表、前台弱口令。CSRF、开放重定向按真实危害评级后仍进漏洞页。不夺旗、不以 getshell 收工。
-已验证 SSRF 看见内网必须 `report_pivot_capability` 扩网（只走 SSRF 参数）；禁止 Kali 直连、禁止 socks/shell 横向。
+已验证 SSRF 看见内网必须 `report_pivot_capability` 扩网（只走 SSRF 参数）；禁止本机直连、禁止 socks/shell 横向。
 
 ## 评级（四级，按已证明影响对号入座；禁止抬级或压级）
 
@@ -87,7 +87,7 @@ info 仅二次复验失败收口，不是第四级。
 
 同一回合并行（有对应资产才开）。工具绝对路径见 skill `kali-kit`。
 
-1. **端口**：`timeout 90 /usr/bin/nmap -sV -T4 -Pn --top-ports 1000 --open <host>`（`run_cmd` `timeout=90`）。不要立刻 `-p-`。
+1. **入口**：用 `http_request` 看已知 URL。不要去读 `/usr/bin/nmap`。不要立刻全端口。
 2. **目录**：中档 ffuf，词表见 `kali-kit`，`timeout=120`
 3. **HTTP 入口**：https/http、robots、sitemap、security.txt、swagger、`.git`、备份
 4. **JS 接口**：调用 skill `kali-kit` 取 `JSFinder.py` 绝对路径
@@ -131,7 +131,7 @@ LFI/RFI、任意读/写/删/下载。默认中危；读到大量 PII 评严重�
 
 ## 9. 信息泄露
 
-DB 连接密码/源码备份=中危；云钥匙或大量 PII=高危（已批量读出=严重）；版本/路径/phpinfo、错误页回显内网 IP 不报。heapdump 默认低危。SSRF 打到内网敏感面再报，并 `report_pivot_capability` 扩网；后续只走已验证 SSRF 参数，不要 Kali 直连。
+DB 连接密码/源码备份=中危；云钥匙或大量 PII=高危（已批量读出=严重）；版本/路径/phpinfo、错误页回显内网 IP 不报。heapdump 默认低危。SSRF 打到内网敏感面再报，并 `report_pivot_capability` 扩网；后续只走已验证 SSRF 参数，不要本机直连。
 
 ## 10. 后门
 
@@ -148,5 +148,5 @@ DB 连接密码/源码备份=中危；云钥匙或大量 PII=高危（已批量�
 - 一类测完立刻切下一类；一个资产测完切下一个。同类型下一实例也要挖。
 - **不限轮次**；墙钟满 12 小时，或连续 30 轮没有新节点也没有新漏洞，硬停记失败。入口连不上不暂停。
 - **已验证洞提危害**：**读面铺开、写面克制**。swagger 读全文档；GET/查询类按类型覆盖未授权与敏感字段，不能停在第一条。写接口只证明权限，禁止落库灌垃圾。
-- **已验证 SSRF 必须扩网登记**：命中 RFC1918 立刻 `report_pivot_capability`（ssrf_*），图上才会出现跳板可达。本机网卡/物机网关是守卫不是目标；后续只走已验证 SSRF 参数，不要 Kali 直连。禁止 socks/shell 横向。phpinfo、指纹、前台弱口令不报。
+- **已验证 SSRF 必须扩网登记**：命中 RFC1918 立刻 `report_pivot_capability`（ssrf_*），图上才会出现跳板可达。本机网卡/物机网关是守卫不是目标；后续只走已验证 SSRF 参数，不要本机直连。禁止 socks/shell 横向。phpinfo、指纹、前台弱口令不报。
 - 词表路径与二进制绝对路径见 skill `kali-kit`。

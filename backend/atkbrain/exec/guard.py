@@ -867,7 +867,7 @@ class Guard:
             if why and not _loopback_is_local_proxy(cmd, ch, port):
                 return GuardDecision(
                     False,
-                    f"拦截：{why}。SSRF 载荷请放进 -d/--data，不要让 Kali 直连 127.0.0.0/8。"
+                    f"拦截：{why}。SSRF 载荷请放进 -d/--data，不要让 本机直连 127.0.0.0/8。"
                     "本地 SOCKS/ssh -D 转发端口除外。",
                     "self_protection", hosts=[ch],
                 )

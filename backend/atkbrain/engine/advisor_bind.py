@@ -103,8 +103,8 @@ _SITUATION_PROTECT_TACTICS: frozenset[str] = frozenset({
     "finding_sqli_chain", "ssrf_as_gateway", "secret_mount", "reverse_binary",
 })
 CYCLE_HUNT_NOTE = (
-    "挖洞循环：已验证洞不收工。至少一格继续测其它类型并独立 report_finding；"
-    "禁止 GETSHELL / 横向 / 提权收工。不要把整猎收成一条利用链。"
+    "挖洞循环：发现更多漏洞，并把已证实危害做到 getshell。路径是侦察→找攻击面→深入利用。"
+    "命令执行后 report_shell 收工。不要把整猎收成一条利用链，也不要只扫不打。"
 )
 _CYCLE_HUNT_DENY: tuple[str, ...] = (
     "hop_auth", "privesc_lateral", "ssrf_as_gateway", "flag_hunt",
@@ -347,6 +347,7 @@ class AdvisorBinding:
     misses: int = 0
     tightened: bool = False
     cycle_hunt: bool = False
+    keep_path_enum: bool = False
     situation_intent_ids: list[str] = field(default_factory=list)
 
     @property
@@ -891,7 +892,9 @@ def should_refresh_stale_binding(
         limit = max(1, int(misses_limit or 3))
     except (TypeError, ValueError):
         limit = 3
-    if str(binding.stall or "").strip().lower() in _CLOSEOUT_STALLS:
+    disproven = any("已否证" in str(b) for b in (binding.ban_repeats or []))
+    # 收口阶段本来不换叙事。面上的写法已经否证后还在空转，就要重开，不能守着同一 URL。
+    if str(binding.stall or "").strip().lower() in _CLOSEOUT_STALLS and not disproven:
         return False
     return int(binding.misses or 0) >= limit
 
@@ -1370,7 +1373,15 @@ def compile_binding(
         if stall == "none":
             stall = "postex"
     elif chain_close:
-        if "content_enum" not in deny:
+        keep_enum = False
+        try:
+            from ..graph.hypothesize import action_surface_incomplete
+            keep_enum = action_surface_incomplete(graph, http=has_http_service)
+        except Exception:
+            keep_enum = False
+        if keep_enum:
+            deny = [t for t in deny if t != "content_enum"]
+        elif "content_enum" not in deny:
             deny.append("content_enum")
         for t in closeout_sidetrack_tactics(verified_categories):
             if t not in deny:
@@ -1412,8 +1423,16 @@ def compile_binding(
         head = ["impact_escalate"] if has_verified_asset else []
         prefer = _uniq(head + list(_HUNT_LIVE_TACTICS) + prefer, limit=8)
         prefer = [t for t in prefer if t not in set(deny)][:8]
-        if has_verified_asset and "content_enum" not in deny:
+        keep_enum = False
+        try:
+            from ..graph.hypothesize import action_surface_incomplete
+            keep_enum = action_surface_incomplete(graph, http=has_http_service)
+        except Exception:
+            keep_enum = False
+        if has_verified_asset and "content_enum" not in deny and not keep_enum:
             deny.append("content_enum")
+        elif keep_enum:
+            deny = [t for t in deny if t != "content_enum"]
 
     if has_http_service:
         open_intents = _ensure_http_hunt_intent(open_intents, has_http=True)
@@ -1457,12 +1476,33 @@ def compile_binding(
             t for t in prefer
             if t not in set(deny) and t not in _LOOT_DEEPEN_TACTICS
         ][:8]
+    surface_open = False
+    form_gaps: list[dict[str, object]] = []
+    try:
+        from ..graph.hypothesize import action_surface_incomplete, request_form_gaps
+        surface_open = action_surface_incomplete(graph, http=has_http_service)
+        form_gaps = request_form_gaps(graph)
+    except Exception:
+        surface_open = False
+        form_gaps = []
+    if surface_open:
+        deny = [t for t in deny if t != "content_enum"]
+        prefer = _uniq(["content_enum"] + list(prefer), limit=8)
+    if form_gaps:
+        deny = [t for t in deny if t != "transfer_form"]
+        prefer = _uniq(["transfer_form"] + list(prefer), limit=8)
     lock_must = bool((chain_close or live_gadget) and reserve)
     must_allow: set[str] | None = None
     if chain_close and reserve:
         must_allow = set(reserve) | _CYCLE_VERIFY_TACTICS
+        if surface_open:
+            must_allow.add("content_enum")
+        if form_gaps:
+            must_allow.add("transfer_form")
     elif lock_must:
         must_allow = set(reserve)
+        if form_gaps:
+            must_allow.add("transfer_form")
     must = _pick_must(
         open_intents, prefer=prefer, deny=deny, already=must, limit=3,
         allow=must_allow,
@@ -1514,6 +1554,9 @@ def compile_binding(
         s = str(name or "").strip()
         if s and s not in subs:
             subs.append(s)
+    if cycle_hunt and has_http_service:
+        from ..agents.prompts import ensure_live_page_reader
+        subs = ensure_live_page_reader(subs, "agent", http=True)
     hypo = nxt_src
     situation_bits: list[str] = []
     secret_open = "secret_mount" in _open_tactic_set(open_intents)
@@ -1571,6 +1614,25 @@ def compile_binding(
     except Exception:
         pass
     nxt = hypo
+    if surface_open:
+        situation_bits.append(
+            "页面和 JS 里的接口不是服务端入口全集。"
+            "本轮先打开入口 HTML 里的同站内容页，把图片、文件、下载地址建成节点；和首页相同的只当阴性对照。"
+            "第一个 500 或登录页不能代替这些内容页。然后再用中档词表列出和首页状态或长度不同的路径，文件名、路径、上传参数单独建成节点。"
+            "静态目录或 WEB-INF 穿不过，只否定这次穿越，不能写成文件面已关闭。"
+        )
+    if form_gaps:
+        pairs = "、".join(
+            f"{gap.get('stem')}（对照 {'、'.join(str(name) for name in (gap.get('siblings') or [])[:2])}）"
+            for gap in form_gaps[:4]
+        )
+        situation_bits.append(
+            "这些入口已经确认存在，调用形式比同站其他入口少："
+            + pairs
+            + "。把对照入口上多出来的、且改变了响应的形式套过来。"
+            "方法名和参数名只用本站已经出现过的，不要新造路径。"
+            "堆栈里的方法名和重写路径返回 404，不能算这个入口已经测完。"
+        )
     binding = AdvisorBinding(
         diagnosis=str(getattr(plan, "diagnosis", None) or "").strip(),
         next_plan=nxt,
@@ -1582,6 +1644,7 @@ def compile_binding(
         subagents=subs[:4],
         stall=stall,
         cycle_hunt=bool(cycle_hunt),
+        keep_path_enum=bool(surface_open),
     )
     return apply_preferred_hop_binding(
         binding, open_intents, graph,
@@ -1847,17 +1910,31 @@ def format_binding_block(binding: AdvisorBinding | None) -> str:
     """写入从者提示：局面必须守；御主假说可打可丢。"""
     if binding is None:
         return ""
+    disproven = [str(x) for x in (binding.ban_repeats or []) if "已否证" in str(x)]
+    if binding.keep_path_enum:
+        guard = "循环按攻击图编译本段。先打开入口 HTML 里的内容页并记下图片和文件地址，再列出和首页状态或长度不同的路径。不得回流邻题/本机内网。"
+    else:
+        guard = "循环按攻击图编译本段。必须消费已有凭证、不得回流目录枚举/邻题/本机内网。"
     lines = [
         "【局面·必须守住】",
-        "循环按攻击图编译本段。必须消费已有凭证、不得离开未关输入面、不得回流目录枚举/邻题/本机内网。",
+        guard,
         "同一身份域：过门与未授权可达并行，不是互为前置。"
         "经跳板打内层登录时，未确认认证接口收到请求体，不算口令否证。",
     ]
+    if disproven:
+        lines.append(
+            "这些路径已经否证，下一轮必须换节点，禁止同一 URL 再换通道："
+            + "、".join(disproven[:4])
+        )
+    else:
+        lines.append("未关的输入面不要丢掉；已经否证的写法必须离开。")
     if (binding.situation or "").strip():
         lines.append(binding.situation.strip())
     if binding.cycle_hunt:
         if CYCLE_HUNT_NOTE not in (binding.situation or ""):
             lines.append(CYCLE_HUNT_NOTE)
+    elif binding.keep_path_enum:
+        lines.append("已有漏洞继续验证。同时打开还没读的内容页，并把响应和首页不同的路径列出来。")
     else:
         lines.append(
             "已有可消耗资产时必须消耗（抽取或投递），禁止再证明同一通道。"

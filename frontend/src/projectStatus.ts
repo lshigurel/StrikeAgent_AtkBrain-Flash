@@ -67,3 +67,25 @@ export function listStatusOf(p: {
   if (p.status === "stopped") return "stopped";
   return "idle";
 }
+
+export function formatRunClock(sec: number): string {
+  const n = Math.max(0, Math.floor(sec || 0));
+  const h = Math.floor(n / 3600);
+  const m = Math.floor((n % 3600) / 60);
+  const s = n % 60;
+  const pad = (x: number) => String(x).padStart(2, "0");
+  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+}
+
+/** 进行中用落点时刻继续走秒；停了就停在已记下的时长。 */
+export function liveHuntElapsed(
+  p: { config?: { hunt?: { elapsed_sec?: number; elapsed_as_of?: number } | null } | null } | null | undefined,
+  nowSec: number,
+  running: boolean,
+): number {
+  const hunt = p?.config?.hunt;
+  const base = Number(hunt?.elapsed_sec || 0);
+  const asOf = Number(hunt?.elapsed_as_of || 0);
+  if (running && asOf > 0) return Math.max(0, base + (nowSec - asOf));
+  return Math.max(0, base);
+}

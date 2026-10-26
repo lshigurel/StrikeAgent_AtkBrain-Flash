@@ -191,5 +191,176 @@ class OneshotSettleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(s._settled.is_set())
 
 
+class GrindCorrectionTests(unittest.TestCase):
+    def test_http_agent_keeps_src_hunt_ahead_of_rce(self) -> None:
+        from ..agents.prompts import ensure_live_page_reader
+        roles = ensure_live_page_reader(
+            ["web-exploit", "rce-hunt", "recon", "src-hunt"], "agent", http=True, keep_rce=True,
+        )
+        self.assertEqual(roles[:3], ["web-exploit", "rce-hunt", "recon"])
+        self.assertEqual(cap_hunt_workers(roles, per_project=4), ["web-exploit", "rce-hunt", "recon"])
+
+    def test_disproven_chain_binding_reopens(self) -> None:
+        from ..engine.advisor_bind import AdvisorBinding, should_refresh_stale_binding
+        stuck = AdvisorBinding(
+            stall="chain", misses=3,
+            ban_repeats=["/login.action?debug=command 已否证"],
+        )
+        self.assertTrue(should_refresh_stale_binding(stuck, misses_limit=3))
+        fresh = AdvisorBinding(stall="chain", misses=3, ban_repeats=["换观测通道"])
+        self.assertFalse(should_refresh_stale_binding(fresh, misses_limit=3))
+
+    def test_stack_trace_path_is_not_a_file_surface(self) -> None:
+        from ..graph.hypothesize import looks_like_file_delivery
+        stack = "java.nio.file.Path at org.apache.struts2.dispatcher.ServletActionContext"
+        self.assertFalse(looks_like_file_delivery(stack, "/login.action 500"))
+        self.assertTrue(looks_like_file_delivery("fileName localfile", "gif 入口"))
+
+    def test_homepage_wildcard_keeps_path_enum(self) -> None:
+        from types import SimpleNamespace
+        from ..engine.advisor_bind import compile_binding
+        plan = SimpleNamespace(
+            next_plan="", diagnosis="", prefer_tactics=[], defer_families=["content_enum"],
+            ban_repeats=[], must_intents=[], subagents=["web-exploit", "recon"],
+        )
+        graph = {"nodes": [{
+            "type": "info", "key": "info:wild",
+            "title": "通配映射假阳性",
+            "detail": "未知 action 返回首页 85317B",
+        }]}
+        binding = compile_binding(
+            plan, has_verified_asset=True, has_http_service=True, graph=graph,
+        )
+        self.assertNotIn("content_enum", binding.deny_tactics)
+        closed = {"nodes": graph["nodes"] + [{
+            "type": "info", "key": "info:file",
+            "title": "文件下载", "detail": "filename 参数",
+        }]}
+        binding2 = compile_binding(
+            plan, has_verified_asset=True, has_http_service=True, graph=closed,
+        )
+        self.assertIn("content_enum", binding2.deny_tactics)
+
+    def test_frontend_list_and_static_traversal_do_not_finish_enum(self) -> None:
+        from types import SimpleNamespace
+        from ..engine.advisor_bind import compile_binding
+        from ..graph.hypothesize import action_surface_incomplete
+        graph = {"nodes": [
+            {"type": "info", "key": "info:inventory",
+             "title": "仅 8 个 .action 被前端引用",
+             "detail": "端点全集来自 JS。继续目录枚举收益低，映射面很窄。"},
+            {"type": "info", "key": "info:lfi-neg",
+             "title": "读文件面全否证",
+             "detail": "静态目录穿越失败，文件面封死。"},
+            {"type": "info", "key": "info:ognl-file",
+             "title": "S2-046 的 filename 位置",
+             "detail": "multipart 字段名不是文件参数入口，否证。"},
+        ]}
+        self.assertTrue(action_surface_incomplete(graph))
+        plan = SimpleNamespace(
+            next_plan="", diagnosis="", prefer_tactics=[], defer_families=["content_enum"],
+            ban_repeats=[], must_intents=[], subagents=["web-exploit", "recon"],
+        )
+        binding = compile_binding(
+            plan, has_verified_asset=True, has_http_service=True, graph=graph,
+        )
+        self.assertNotIn("content_enum", binding.deny_tactics)
+        self.assertTrue(binding.keep_path_enum)
+        done = {"nodes": graph["nodes"] + [
+            {"type": "info", "key": "info:path-enum-pass", "title": "路径对比已完成", "detail": "程序已请求"},
+            {"type": "info", "key": "info:file-param-pass", "title": "文件参数对比已完成", "detail": "程序已请求"},
+        ]}
+        self.assertFalse(action_surface_incomplete(done))
+        only_paths = {"nodes": graph["nodes"] + [
+            {"type": "info", "key": "info:path-enum-pass", "title": "路径对比已完成", "detail": "还没有文件参数对比"},
+        ]}
+        self.assertTrue(action_surface_incomplete(only_paths))
+        prose = {"nodes": graph["nodes"] + [{
+            "type": "info", "key": "info:said-done",
+            "title": "词表结果",
+            "detail": "差异路径已入库",
+        }]}
+        self.assertTrue(action_surface_incomplete(prose))
+
+    def test_other_host_and_other_param_names_use_the_same_rule(self) -> None:
+        from types import SimpleNamespace
+        from ..engine.advisor_bind import compile_binding
+        from ..graph.hypothesize import action_surface_incomplete
+        graph = {"nodes": [
+            {"type": "service", "key": "svc:app", "title": "app.example:443",
+             "detail": "HTTPS 登录页，页面上只有 /login.php 和 /home.php。"},
+            {"type": "info", "key": "info:crawl",
+             "title": "crawled pages only",
+             "detail": "JS 里看到的路由先记下。没有再列未出现的路径。"},
+        ]}
+        self.assertTrue(action_surface_incomplete(graph, http=True))
+        plan = SimpleNamespace(
+            next_plan="", diagnosis="", prefer_tactics=[], defer_families=["content_enum"],
+            ban_repeats=[], must_intents=[], subagents=["web-exploit", "recon"],
+        )
+        binding = compile_binding(
+            plan, has_verified_asset=True, has_http_service=True, graph=graph,
+        )
+        self.assertNotIn("content_enum", binding.deny_tactics)
+        self.assertTrue(binding.keep_path_enum)
+        self.assertIn("内容页", binding.situation)
+        named = {"nodes": graph["nodes"] + [{
+            "type": "endpoint", "key": "ep:doc",
+            "title": "/export.php", "detail": "download 参数接收服务端路径",
+        }]}
+        self.assertFalse(action_surface_incomplete(named, http=True))
+        prose = {"nodes": graph["nodes"] + [{
+            "type": "info", "key": "info:not-yet",
+            "title": "穿越被拒",
+            "detail": "尚未测下载/上传接口",
+        }]}
+        self.assertTrue(action_surface_incomplete(prose, http=True))
+        listed = {"nodes": graph["nodes"] + [
+            {"type": "info", "key": "info:path-enum-pass", "title": "路径对比已完成", "detail": "和首页不同的路径已入库"},
+            {"type": "info", "key": "info:file-param-pass", "title": "文件参数对比已完成", "detail": "文件参数已对比"},
+        ]}
+        self.assertFalse(action_surface_incomplete(listed, http=True))
+        mention = {"nodes": graph["nodes"] + [{
+            "type": "service", "key": "svc:tool",
+            "title": "入口", "detail": "准备用 ffuf，还没有结果",
+        }]}
+        self.assertTrue(action_surface_incomplete(mention, http=True))
+
+    def test_narrow_route_reuses_a_form_already_seen_on_a_sibling(self) -> None:
+        from types import SimpleNamespace
+        from ..engine.advisor_bind import compile_binding
+        from ..graph.hypothesize import hypotheses_for_node, request_form_gaps
+        graph = {"nodes": [
+            {"type": "danger", "key": "http://example.test/alpha.action",
+             "title": "/alpha.action 500", "detail": "空指针"},
+            {"type": "danger", "key": "http://example.test/beta.action",
+             "title": "/beta.action 500", "detail": "堆栈"},
+            {"type": "info", "key": "http://example.test/beta!run.action",
+             "title": "/beta!run.action 200", "detail": "和首页不同"},
+            {"type": "info", "key": "info:wild", "title": "通配回首页",
+             "detail": "/gamma.action 不是真实动作"},
+            {"type": "danger", "key": "http://example.test/gamma.action",
+             "title": "/gamma.action 500", "detail": "堆栈"},
+        ]}
+        gaps = request_form_gaps(graph)
+        stems = [gap["stem"] for gap in gaps]
+        self.assertIn("alpha", stems)
+        self.assertNotIn("beta", stems)
+        self.assertNotIn("gamma", stems)
+        hyps = hypotheses_for_node(graph["nodes"][0], allows_flag=False, objective="agent", graph=graph)
+        text = " ".join(item.description for item in hyps)
+        self.assertIn("alpha", text)
+        self.assertIn("beta", text)
+        self.assertNotIn("alpha!run", text)
+        self.assertNotIn("!", text)
+        plan = SimpleNamespace(
+            next_plan="", diagnosis="", prefer_tactics=[], defer_families=[],
+            ban_repeats=[], must_intents=[], subagents=["web-exploit", "recon"],
+        )
+        binding = compile_binding(plan, has_http_service=True, graph=graph)
+        self.assertIn("alpha", binding.situation)
+        self.assertNotIn("!", binding.situation)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,13 +1,17 @@
-"""本机 Kali 渗透工具清单（绝对路径）。
+"""仓库内真实存在的工具路径。
 
 清单本身是 skill `kali-kit`，由从者/角色工人在需要路径时调用。
 不要把本模块的目录全文注入系统提示。
+下面的绝对路径是 fork 维护者在目标部署机（Kali 系）上逐条核实过的；
+换一台机器部署时按实际安装位置替换这些常量，不要凭包名猜测，
+也不要因为读不到就去翻别的目录。
 """
 from __future__ import annotations
 
 from ..config import REPO_ROOT
 
-# 词表绝对路径（本机核实存在）。CTF/红队一律禁止超过 10 万行。
+# 词表绝对路径（部署机核实存在）。CTF/红队一律禁止超过 10 万行。
+# 注意：上游 1.1.0 删掉了这组常量，合并时需保留，否则下面 f-string 引用会 NameError。
 WL_DIR_SMALL = "/usr/share/wordlists/dirb/common.txt"  # 4614
 WL_DIR_MED = "/usr/share/wordlists/dirbuster/directory-list-2.3-small.txt"  # 87664；目录最大档
 WL_DIR_OVER_100K = "/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt"  # 220560；禁止
@@ -22,28 +26,28 @@ WL_ROCKYOU = "/usr/share/wordlists/rockyou.txt"  # ~1400 万；一律禁止
 # 写入从者/子智能体提示的短指针：清单在 skill 里，禁止把目录塞进系统提示。
 KIT_SKILL_HINT = (
     "需要本机工具绝对路径、词表或可复制命令时，调用 skill `kali-kit`。"
+    "该环境不保证是某一发行版：清单里的路径都已在部署机核实，清单外的路径当不存在，"
+    "禁止 which / command -v / type / ls /usr/share/wordlists / ls seclists / 猜包名。"
     "CTF打内网时可以先用fscan扫一下端口和漏洞"
     "遇到Shiro特征时立即调用Shiro工具进行探测和利用"
-    "禁止 which / command -v / type / ls /usr/share/wordlists / ls seclists / 猜包名。"
-    "未在该 skill 列出的工具当不存在。"
     "利用 payload 被 WAF 或 403/406 拦截页拦住时，调用 skill `waf-bypass-methodology`；"
-    "路径级 401/403 先走 kali-kit 的 bypass-403。"
+    "路径级 401/403 先走该 skill 里的 bypass-403。"
 )
 
 KIT_RULES = """# 本机工具纪律
 - Pi 用内置 `read` 加载本文件；之后作业只用扩展工具 `run_cmd` / `http_request`，不要用内置 bash。
-- 下列路径已存在。禁止 `which` / `command -v` / `type` 探工具；禁止 `ls /usr/share/wordlists`、ls seclists、猜 MCP 名。
-- 未列出的工具当不存在。不要编造系统包名去 which。
-- 命令一律 `run_cmd`；HTTP 优先 `http_request`。
-- CTF 与红队一律禁止超过 10 万行的词表：端口全表、账号密码、子目录、子域名、host 碰撞、哈希碰撞都算。禁止 rockyou（~1400 万）与 dirbuster medium（220560）。目录最大用中档 87664；子域/host 只用 dnsmap（17576）；口令最大 metasploit password.lst（88406）。
-- 开局策略（CTF 先看入口 vs 红队三圈）见 skill `recon-fanout` / `recon-spiral`。本 skill 只给路径和可复制命令。
+- 下面只列出仓库里真实存在的文件。禁止 `which` / `command -v` / `type`，禁止 `ls /usr/share`、ls seclists、猜包名。
+- 未列出的文件当不存在。不要编造系统路径，也不要因为读不到词表就改去猜别的目录。
+- HTTP 优先 `http_request`。没有词表文件时不要开目录爆破。
+- 词表超过 10 万行一律不用：端口全表、账号密码、子目录、子域名、host 碰撞、哈希碰撞都算。
+- 开局策略见 skill `recon-fanout` / `recon-spiral`。本 skill 只给仓库内真实路径。
 """
 
 
 def kit_web(repo_root: str) -> str:
     jsfinder = f"{repo_root}/tools/JSFinder/JSFinder.py"
     bypass = f"{repo_root}/tools/bypass-403/bypass-403.sh"
-    return f"""# Web 能力（默认工具 + 一条可复制命令）
+    return f"""# Web 能力（部署机工具路径 + 一条可复制命令）
 - 端口扫描：CTF 可用 `timeout 60 /usr/bin/nmap -sV -T4 -Pn --top-ports 100 --open <host>`。红队/SRC **禁止 nmap/masscan**（原始套接字会漏真实 IP），改用 `curl` / `http_request` / `ffuf`。
 - Web 指纹：`/usr/bin/whatweb -a 3 <url>`。
 - WAF：`/usr/bin/wafw00f <url>`。
@@ -67,12 +71,9 @@ def kit_web(repo_root: str) -> str:
 """
 
 
-KIT_EXTRA_WEB = f"""# 已装备选（绝对路径；目录默认仍 ffuf，不要四个扫目录工具轮换）
-- 目录备选（同一套小/中词表，禁止超 10 万行；ffuf 失败或缺扩展名规则时才换）：
-  `/usr/bin/gobuster dir -u http://<host>/ -w {WL_DIR_MED}`；`/usr/bin/feroxbuster -u http://<host>/ -w {WL_DIR_MED}`；`/usr/bin/dirb http://<host>/ {WL_DIR_SMALL}`；`/usr/bin/wfuzz -c -z file,{WL_DIR_MED} --hc 404 http://<host>/FUZZ`
-- Web：`/usr/bin/nikto -h <url>`（仅已确认 HTTP 面）；`/usr/bin/httpx -u <url> -title -status-code -silent`（探活/标题）；nuclei 扫模板；wafw00f 识别 WAF。
-- 口令：CTF 可用 `/usr/bin/hydra`、`/usr/bin/medusa`、`/usr/bin/ncrack`。红队/SRC 禁止这三者和 patator。`/usr/sbin/john`、`/usr/bin/hashcat` 仍受 10 万行词表限制。禁止 rockyou 与 hashcat 全库。
-- 其它 Web 相关：`/usr/bin/dig`、`/usr/bin/amass`、`/usr/bin/theHarvester`、`/usr/bin/cewl`、`/usr/bin/searchsploit`、`/usr/bin/proxychains4`、`/usr/bin/msfconsole`。
+KIT_EXTRA_WEB = """# 不要假设的系统工具
+- 目录、子域、指纹、口令爆破都依赖本机词表和二进制。这里没有列出路径，就不要去读，不要编造 /usr/share 或 /usr/bin。
+- 红队禁止 nmap/masscan（原始套接字会漏真实 IP）。没有词表时用 `http_request` 看入口，不要换一个扫描器继续猜路径。
 """
 
 KIT_EXTRA_LATERAL = """# 横向 / 服务（何时用 + 一条模板）
@@ -128,12 +129,12 @@ KIT_BIN = """# 二进制 / 逆向（绝对路径）
 SKILL_FRONTMATTER = """---
 name: kali-kit
 description: >
-  This machine's Kali pentest tools: absolute binary paths, pinned wordlists,
-  copy-paste commands (nmap, ffuf, hydra, ssh, sshpass, socat, sqlmap, JSFinder,
-  bypass-403, nxc, impacket, binutils). Call only after you already decided you
-  need that scanner or wordlist for an unknown surface. Do not call to start a
-  CTF puzzle — encoding, crypto, protocol, or a hinted path is local python3 /
-  openssl / http_request, not this skill. Never which / ls wordlists.
+  Repo-local tool paths that actually exist (JSFinder, bypass-403).
+  This environment is not assumed to be any one distro. Do not read
+  /usr/bin or /usr/share wordlists. Call only after you already decided
+  you need a listed file for an unknown surface. Encoding, crypto,
+  protocol, or a hinted path is local python3 / openssl / http_request,
+  not this skill. Never which / ls wordlists.
   Shared by CTF and red team. Not recon policy — that is recon-fanout /
   recon-spiral.
 ---
@@ -165,10 +166,8 @@ def reverse_kit() -> str:
 
 def lateral_kit() -> str:
     creds = (
-        "# 口令档位（hydra/medusa/ncrack/john/hashcat）\n"
-        f"- 小：用户 `{WL_USER_SMALL}` + 密码 `{WL_PASS_SMALL}`；HTTP `{WL_HTTP_DEFAULT}`\n"
-        f"- 中：`{WL_PASS_MED}`\n"
-        f"- 大（未超 10 万，红队可用；CTF 不要升档）：`{WL_PASS_LARGE}`。一律禁止 `{WL_ROCKYOU}` 与 hashcat 全库。\n"
-        "- 路径：`/usr/bin/ssh`、`/usr/bin/sshpass`、`/usr/bin/hydra`、`/usr/bin/medusa`、`/usr/bin/ncrack`、`/usr/sbin/john`、`/usr/bin/hashcat`。\n"
+        "# 口令\n"
+        "- 只用题面或图上已经出现的口令字面量。不要升到超大词表，不要假设系统词表路径存在。\n"
+        "- 转发到本机后再用本机已有的 ssh 客户端。不要写死 /usr/bin。\n"
     )
     return "\n".join([KIT_RULES, KIT_EXTRA_LATERAL, creds]).strip() + "\n"

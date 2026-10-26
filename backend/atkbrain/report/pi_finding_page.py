@@ -38,15 +38,16 @@ PI_PAGE_SYSTEM = """你是 StrikeAgent_AtkBrain-Flash 的漏洞页撰稿人，�
 硬约束
 - 不得编造事实包没有的 Host、URL、路径、参数、账号、flag、命令输出或状态码。
 - 「危害」只写对本项目/本资产已经被证据证明的影响；没打到的后续标「尚未证明」，不要写成已打穿。
-- 「手动复现」写复核员实际走过的步骤（跳板、工具、命令、成功判定），不要写 Burp Repeater 十二步套话，不要 CIA 模型。
+- 事实包若标明二次验证失败：五个板块仍按首次证据写完整，不要写成二次已经复现，也不要写成这类漏洞不存在。失败原因由复核理由单独展示，不要拿占位句代替正文。
+- 「手动复现」写复核员实际走过的步骤（跳板、工具、命令、成功判定），不要写 Burp Repeater 十二步套话，不要把复现步骤改写成机密性/完整性/可用性三段论。
 - 「修复方式」针对本条根因（例如弱口令、未授权接口、拼接 SQL），不要泛泛的「使用参数化查询」。
-- 禁止把邻题 IP、本机 Kali 网段、平台控制台写进正文。
+- 禁止把邻题 IP、本机网段、平台控制台写进正文。
 
 只输出 JSON：
 {
   "summary": "漏洞简介（120～280 字：什么入口、怎么触发、验证看到了什么）",
   "impact": "对本项目的危害（120～280 字：影响到哪台主机/哪种数据/是否已证明命令执行或数据接管）",
-  "rating": "红队评级（先写级别中文名和 critical|high|medium|low|info，再写为何是这个级、二次验证怎么打的）",
+  "rating": "NVD CVSS 3.1（先写 CVSS:3.1 向量和基础分，再写 NVD 定性：低危/中危/高危/严重，以及八项为什么这样打）",
   "repro": "手动复现（分条，至少 4 步，含成功判定；可附真实 curl/命令，不新增 payload）",
   "fix": "修复方式（针对本条：立即缓解 + 根治，具体到账号/接口/配置）"
 }
@@ -164,6 +165,8 @@ def _facts_blob(finding: dict, project: dict | None) -> dict:
         "proof_url": finding.get("proof_url") or "",
         "redteam_rating": finding.get("redteam_rating") or "",
         "redteam_rating_rationale": _clean(finding.get("redteam_rating_rationale"), limit=4000),
+        "verification_status": finding.get("verification_status") or "",
+        "secondary_verified": bool(finding.get("secondary_verified")),
         "related_node": finding.get("related_node"),
     }
 
@@ -175,9 +178,15 @@ async def compose_pi_page(finding: dict, *, project: dict | None = None) -> dict
     from ..agents.pi_runtime import query_text, role_model
 
     facts = _facts_blob(finding, project)
-    prompt = (
+    failed = str(finding.get("verification_status") or "").lower() == "excluded"
+    lead = (
+        "下面这条的二次验证没有复现同样危害。仍按首次事实撰写五个板块，不要写成已经二次验证通过。"
+        if failed else
         "下面是本项目里已经二次验证过的一条漏洞事实包。"
-        "请按系统要求撰写漏洞页五个板块，只使用这些事实。\n\n"
+    )
+    prompt = (
+        lead
+        + "请按系统要求撰写漏洞页五个板块，只使用这些事实。\n\n"
         + json.dumps(facts, ensure_ascii=False, indent=2)[:80000]
     )
     model = role_model(
@@ -210,8 +219,9 @@ async def ensure_pi_page(
     if has_pi_page(out):
         return out
     if not out.get("secondary_verified"):
+        failed = str(out.get("verification_status") or "").lower() == "excluded"
         from ..review.flags import get_review_flags
-        if get_review_flags()["secondary_verify"]:
+        if get_review_flags()["secondary_verify"] and not failed:
             return out
     if not fid:
         return out
@@ -270,7 +280,8 @@ def schedule_pi_page(project_id: str, fid: str) -> None:
                 outcome = "ok"
                 return
             from ..review.flags import get_review_flags
-            if not data.get("secondary_verified") and get_review_flags()["secondary_verify"]:
+            failed = str(data.get("verification_status") or "").lower() == "excluded"
+            if not data.get("secondary_verified") and get_review_flags()["secondary_verify"] and not failed:
                 outcome = "skip"
                 return
             from ..projects import get_project
@@ -304,7 +315,8 @@ async def fill_missing_pi_pages(project_id: str, *, project: dict | None = None)
     """收口复核会话：给已达到写页门槛但还没写页的洞补撰写。"""
     from ..review.flags import get_review_flags
     if get_review_flags()["secondary_verify"]:
-        sql = """SELECT * FROM findings WHERE project_id=? AND secondary_verified=1
+        sql = """SELECT * FROM findings WHERE project_id=?
+                 AND (secondary_verified=1 OR lower(IFNULL(verification_status,''))='excluded')
                  AND (report_summary IS NULL OR TRIM(report_summary)='')"""
     else:
         sql = """SELECT * FROM findings WHERE project_id=?

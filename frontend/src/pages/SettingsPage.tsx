@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { NavLink, Navigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import { useAuth } from "../AuthGate";
 import { Modal } from "../components/Modal";
@@ -8,32 +9,26 @@ import { McpSettingsPanel } from "../features/mcp/McpSettingsPanel";
 
 type HuntClocks = {
   loop_max_turns: number;
-  loop_max_turns_src: number;
-  loop_max_turns_redteam: number;
-  src_runtime_hard_stop_sec: number;
-  redteam_runtime_hard_stop_sec: number;
+  loop_max_turns_agent: number;
+  agent_runtime_hard_stop_sec: number;
   runtime_hard_stop_sec: number;
   runtime_hard_stop_pass2_sec: number;
   runtime_hard_stop_pass3_sec: number;
   runtime_hard_stop_pass_step_sec: number;
   graph_idle_empty_plans: number;
-  loop_stall_limit_redteam: number;
-  loop_stall_limit_src: number;
+  loop_stall_limit_agent: number;
 };
 
 const EMPTY_CLOCKS: HuntClocks = {
   loop_max_turns: 0,
-  loop_max_turns_src: 0,
-  loop_max_turns_redteam: 0,
-  src_runtime_hard_stop_sec: 12 * 3600,
-  redteam_runtime_hard_stop_sec: 12 * 3600,
+  loop_max_turns_agent: 0,
+  agent_runtime_hard_stop_sec: 6 * 3600,
   runtime_hard_stop_sec: 40 * 60,
   runtime_hard_stop_pass2_sec: 120 * 60,
   runtime_hard_stop_pass3_sec: 180 * 60,
   runtime_hard_stop_pass_step_sec: 60 * 60,
   graph_idle_empty_plans: 6,
-  loop_stall_limit_redteam: 10,
-  loop_stall_limit_src: 10,
+  loop_stall_limit_agent: 10,
 };
 
 function secToHours(sec: number) {
@@ -43,8 +38,15 @@ function secToMin(sec: number) {
   return String(Math.round((Number(sec) || 0) / 60));
 }
 
+const SETTINGS_SECTIONS = ["account", "model", "hunt", "review", "proxy", "mcp"] as const;
+type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
+
+function isSection(value: string | undefined): value is SettingsSection {
+  return SETTINGS_SECTIONS.includes(value as SettingsSection);
+}
+
 export function SettingsPage() {
-  const { t, locale } = useT();
+  const { t } = useT();
   const { me, refresh } = useAuth();
   const [message, setMessage] = useState("");
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
@@ -61,12 +63,12 @@ export function SettingsPage() {
   const [llmBusy, setLlmBusy] = useState<"" | "save" | "test">("");
   const [llmTest, setLlmTest] = useState<{ ok: boolean; text: string } | null>(null);
   const [review, setReview] = useState({ secondary_verify: true, redteam_rating: true });
+  const [webhook, setWebhook] = useState({ url: "", severities: "", projects: "", assets: "" });
   const [totpUrl, setTotpUrl] = useState("");
   const [totpSecret, setTotpSecret] = useState("");
   const [setupId, setSetupId] = useState("");
   const [totpCode, setTotpCode] = useState("");
   const [clocks, setClocks] = useState<HuntClocks>(EMPTY_CLOCKS);
-  const [clockPreview, setClockPreview] = useState<Record<string, { label?: string; conditions?: string[] }>>({});
   useEffect(() => {
     let first = true;
     const load = () => {
@@ -96,17 +98,19 @@ export function SettingsPage() {
       }
       const hc = r?.defaults?.hunt_clocks;
       if (hc && typeof hc === "object") setClocks({ ...EMPTY_CLOCKS, ...hc });
-      if (r?.defaults?.hard_stop) setClockPreview(r.defaults.hard_stop);
+      const hook = r?.webhook;
+      if (hook && typeof hook === "object") {
+        setWebhook({
+          url: String(hook.url || ""),
+          severities: Array.isArray(hook.severities) ? hook.severities.join(",") : "",
+          projects: Array.isArray(hook.projects) ? hook.projects.join(",") : "",
+          assets: Array.isArray(hook.assets) ? hook.assets.join(",") : "",
+        });
+      }
     }).catch(() => {});
     const tmr = setInterval(load, 2000);
     return () => clearInterval(tmr);
   }, []);
-
-  useEffect(() => {
-    api.settings().then((r) => {
-      if (r?.defaults?.hard_stop) setClockPreview(r.defaults.hard_stop);
-    }).catch(() => {});
-  }, [locale]);
 
   const tell = (ok: boolean, text: string) => {
     setMessage(text);
@@ -179,6 +183,40 @@ export function SettingsPage() {
     }
   };
 
+  const saveWebhook = async () => {
+    setMessage("");
+    try {
+      const split = (raw: string) => raw.split(",").map((x) => x.trim()).filter(Boolean);
+      const r = await api.setWebhook({
+        url: webhook.url.trim(),
+        severities: split(webhook.severities),
+        projects: split(webhook.projects),
+        assets: split(webhook.assets),
+      });
+      if (r?.webhook) {
+        setWebhook({
+          url: r.webhook.url || "",
+          severities: (r.webhook.severities || []).join(","),
+          projects: (r.webhook.projects || []).join(","),
+          assets: (r.webhook.assets || []).join(","),
+        });
+      }
+      tell(true, t("settings.webhookSave"));
+    } catch (e: any) {
+      tell(false, String(e?.message || e));
+    }
+  };
+
+  const retryWebhook = async () => {
+    setMessage("");
+    try {
+      const r = await api.retryWebhook();
+      tell(true, `${t("settings.webhookRetry")} ${r.sent}/${r.sent + r.failed}`);
+    } catch (e: any) {
+      tell(false, String(e?.message || e));
+    }
+  };
+
   const toggleReview = async (key: "secondary_verify" | "redteam_rating") => {
     setMessage("");
     const next = { ...review, [key]: !review[key] };
@@ -224,7 +262,6 @@ export function SettingsPage() {
     try {
       const r = await api.setHuntClocks(clocks);
       if (r?.hunt_clocks) setClocks({ ...EMPTY_CLOCKS, ...r.hunt_clocks });
-      if (r?.hard_stop) setClockPreview(r.hard_stop);
       tell(true, t("settings.clocksSaved"));
     } catch (e: any) {
       tell(false, String(e?.message || e));
@@ -242,6 +279,20 @@ export function SettingsPage() {
     setClocks((c) => ({ ...c, [key]: sec }));
   };
 
+  const { section: rawSection } = useParams();
+  if (rawSection && !isSection(rawSection)) {
+    return <Navigate to="/settings/account" replace />;
+  }
+  const section: SettingsSection = isSection(rawSection) ? rawSection : "account";
+  const nav: { id: SettingsSection; label: string }[] = [
+    { id: "account", label: t("settings.navAccount") },
+    { id: "model", label: t("settings.navModel") },
+    { id: "hunt", label: t("settings.navHunt") },
+    { id: "review", label: t("settings.navReview") },
+    { id: "proxy", label: t("settings.navProxy") },
+    { id: "mcp", label: t("settings.navMcp") },
+  ];
+
   return (
     <div className="page-container settings-page">
       <header className="page-heading">
@@ -258,50 +309,44 @@ export function SettingsPage() {
           </div>
         </Modal>
       ) : null}
-      <div className="settings-grid">
-        <McpSettingsPanel />
-        {me?.authenticated ? (
-          <section className="card-cream" style={{ gridColumn: "1 / -1" }}>
+      <div className="settings-shell">
+        <nav className="settings-sub" aria-label={t("settings.title")}>
+          {nav.map((item) => (
+            <NavLink key={item.id} to={`/settings/${item.id}`} className={({ isActive }) => (isActive ? "active" : undefined)}>
+              {item.label}
+            </NavLink>
+          ))}
+        </nav>
+        <div className="settings-panel">
+        {section === "mcp" ? (
+          <McpSettingsPanel />
+        ) : null}
+        {section === "account" && me?.authenticated ? (
+          <section className="card-cream">
             <h3>{t("password.settingsTitle")}</h3>
             <p className="muted">{t("password.settingsHint")}</p>
             <PasswordChangeForm requireOld onDone={() => { void refresh(); }} />
           </section>
         ) : null}
-        <section className="card-cream" style={{ gridColumn: "1 / -1" }}>
+        {section === "hunt" ? (
+        <section className="card-cream">
           <h3>{t("settings.clocksTitle")}</h3>
           <p className="muted">{t("settings.clocksHint")}</p>
           <div className="hunt-clock-grid">
             <div>
-              <h4>{t("projects.trackRedBtn")}</h4>
+              <h4>{t("projects.trackAgent")}</h4>
               <label className="login-field">
                 <span>{t("settings.clockHours")}</span>
-                <input className="input" type="number" min={0} max={72} step={0.5} value={secToHours(clocks.redteam_runtime_hard_stop_sec)} onChange={(e) => setClock("redteam_runtime_hard_stop_sec", e.target.value, "hour")} />
+                <input className="input" type="number" min={0} max={72} step={0.5} value={secToHours(clocks.agent_runtime_hard_stop_sec)} onChange={(e) => setClock("agent_runtime_hard_stop_sec", e.target.value, "hour")} />
               </label>
               <label className="login-field">
                 <span>{t("settings.clockTurns")}</span>
-                <input className="input" type="number" min={0} max={9999} value={clocks.loop_max_turns_redteam} onChange={(e) => setClock("loop_max_turns_redteam", e.target.value, "int")} />
+                <input className="input" type="number" min={0} max={9999} value={clocks.loop_max_turns_agent} onChange={(e) => setClock("loop_max_turns_agent", e.target.value, "int")} />
               </label>
               <label className="login-field">
                 <span>{t("settings.clockStall")}</span>
-                <input className="input" type="number" min={0} max={9999} value={clocks.loop_stall_limit_redteam} onChange={(e) => setClock("loop_stall_limit_redteam", e.target.value, "int")} />
+                <input className="input" type="number" min={0} max={9999} value={clocks.loop_stall_limit_agent} onChange={(e) => setClock("loop_stall_limit_agent", e.target.value, "int")} />
               </label>
-              <p className="muted" style={{ fontSize: 12 }}>{clockPreview.redteam?.label || ""}</p>
-            </div>
-            <div>
-              <h4>{t("projects.trackSrcBtn")}</h4>
-              <label className="login-field">
-                <span>{t("settings.clockHours")}</span>
-                <input className="input" type="number" min={0} max={72} step={0.5} value={secToHours(clocks.src_runtime_hard_stop_sec)} onChange={(e) => setClock("src_runtime_hard_stop_sec", e.target.value, "hour")} />
-              </label>
-              <label className="login-field">
-                <span>{t("settings.clockTurns")}</span>
-                <input className="input" type="number" min={0} max={9999} value={clocks.loop_max_turns_src} onChange={(e) => setClock("loop_max_turns_src", e.target.value, "int")} />
-              </label>
-              <label className="login-field">
-                <span>{t("settings.clockStall")}</span>
-                <input className="input" type="number" min={0} max={9999} value={clocks.loop_stall_limit_src} onChange={(e) => setClock("loop_stall_limit_src", e.target.value, "int")} />
-              </label>
-              <p className="muted" style={{ fontSize: 12 }}>{clockPreview.src?.label || ""}</p>
             </div>
             <div>
               <h4>{t("projects.trackCtfBtn")}</h4>
@@ -329,14 +374,40 @@ export function SettingsPage() {
                 <span>{t("settings.clockIdlePlans")}</span>
                 <input className="input" type="number" min={1} max={100} value={clocks.graph_idle_empty_plans} onChange={(e) => setClock("graph_idle_empty_plans", e.target.value, "int")} />
               </label>
-              <p className="muted" style={{ fontSize: 12 }}>{clockPreview.flag?.label || ""}</p>
             </div>
           </div>
           <div className="row" style={{ gap: 8, marginTop: 12 }}>
             <button className="btn btn-primary btn-sm" type="button" onClick={() => { void saveClocks(); }}>{t("settings.saveClocks")}</button>
           </div>
         </section>
-        <section className="card-cream" style={{ gridColumn: "1 / -1" }}>
+        ) : null}
+        {section === "review" ? (
+        <>
+        <section className="card-cream">
+          <h3>{t("settings.webhookTitle")}</h3>
+          <p className="muted">{t("settings.webhookHint")}</p>
+          <label className="login-field">
+            <span>{t("settings.webhookUrl")}</span>
+            <input className="input" value={webhook.url} onChange={(e) => setWebhook({ ...webhook, url: e.target.value })} placeholder="https://" />
+          </label>
+          <label className="login-field">
+            <span>{t("settings.webhookSeverity")}</span>
+            <input className="input" value={webhook.severities} onChange={(e) => setWebhook({ ...webhook, severities: e.target.value })} placeholder="high,critical" />
+          </label>
+          <label className="login-field">
+            <span>{t("settings.webhookProjects")}</span>
+            <input className="input" value={webhook.projects} onChange={(e) => setWebhook({ ...webhook, projects: e.target.value })} placeholder="p_..." />
+          </label>
+          <label className="login-field">
+            <span>{t("settings.webhookAssets")}</span>
+            <input className="input" value={webhook.assets} onChange={(e) => setWebhook({ ...webhook, assets: e.target.value })} placeholder="app.example.com" />
+          </label>
+          <div className="row" style={{ gap: 8, marginTop: 12 }}>
+            <button className="btn btn-primary btn-sm" type="button" onClick={() => { void saveWebhook(); }}>{t("settings.webhookSave")}</button>
+            <button className="btn btn-secondary btn-sm" type="button" onClick={() => { void retryWebhook(); }}>{t("settings.webhookRetry")}</button>
+          </div>
+        </section>
+        <section className="card-cream">
           <h3>{t("settings.reviewTitle")}</h3>
           <p className="muted">{t("settings.reviewHint")}</p>
           <dl className="settings-list">
@@ -366,8 +437,10 @@ export function SettingsPage() {
             </dd>
           </dl>
         </section>
-        {me?.authenticated ? (
-          <section className="card-cream" style={{ gridColumn: "1 / -1" }}>
+        </>
+        ) : null}
+        {section === "account" && me?.authenticated ? (
+          <section className="card-cream">
             <h3>{t("settings.totpTitle")}</h3>
             <p className="muted">{t("settings.totpHint")}</p>
             <dl className="settings-list">
@@ -401,7 +474,8 @@ export function SettingsPage() {
             ) : null}
           </section>
         ) : null}
-        <section className="card-cream" style={{ gridColumn: "1 / -1" }}>
+        {section === "proxy" ? (
+        <section className="card-cream">
           <h3>{t("settings.proxyTitle")}</h3>
           <p className="muted">{t("settings.proxyHint")}</p>
           <dl className="settings-list">
@@ -421,7 +495,9 @@ export function SettingsPage() {
             <button className="btn btn-primary btn-sm" type="button" onClick={() => { void savePool(); }}>{t("settings.savePool")}</button>
           </div>
         </section>
-        <section className="card-cream" style={{ gridColumn: "1 / -1" }}>
+        ) : null}
+        {section === "model" ? (
+        <section className="card-cream">
           <h3>{t("settings.piTitle")}</h3>
           <p className="muted">{t("settings.piHint")}</p>
           <div style={{ display: "grid", gap: 12, marginTop: 14, maxWidth: 640 }}>
@@ -479,6 +555,8 @@ export function SettingsPage() {
           </div>
           {llmTest ? <p className={llmTest.ok ? "muted" : "error-text"} style={{ marginTop: 10 }}>{llmTest.text}</p> : null}
         </section>
+        ) : null}
+        </div>
       </div>
     </div>
   );

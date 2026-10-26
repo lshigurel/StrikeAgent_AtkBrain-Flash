@@ -133,7 +133,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <Link to="/agents" className={`sidebar-link ${location.pathname === "/agents" ? "active" : ""}`} title={t("shell.agents")}>
             <Icon name="agents" /><span>{t("shell.agents")}</span>
           </Link>
-          <Link to="/settings" className={`sidebar-link ${location.pathname === "/settings" ? "active" : ""}`} title={t("shell.settings")}>
+          <Link to="/settings/account" className={`sidebar-link ${location.pathname.startsWith("/settings") ? "active" : ""}`} title={t("shell.settings")}>
             <Icon name="settings" /><span>{t("shell.settings")}</span>
           </Link>
           {me?.authenticated ? (

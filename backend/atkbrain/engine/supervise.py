@@ -934,7 +934,7 @@ class LoopSupervisor:
         record_history: bool = True,
     ) -> None:
         self.binding = binding
-        self.assigned_intent_ids = list(binding.must_intents[:3])
+        self.assigned_intent_ids = list(binding.must_intents[:1])
         self.prefer_tactics = list(binding.prefer_tactics[:8])
         for fam in list(binding.deny_tactics):
             if fam and fam not in self.banned_strategies:
@@ -1060,7 +1060,9 @@ class LoopSupervisor:
             needs_channel_oracle=oracle_open,
             cycle_hunt=cycle,
             invert_ops=invert_ops,
-            extra_subagents=("src-hunt",) if cycle else (),
+            extra_subagents=(
+                ("web-exploit", "src-hunt") if flags.get("has_http_service") else ("src-hunt",)
+            ) if cycle else (),
             has_http_service=bool(flags.get("has_http_service")),
         )
         protect = protected_tactics(
@@ -2079,7 +2081,7 @@ class LoopSupervisor:
 
     def drain_assigned_intents(self) -> list[str]:
         if self.binding and self.binding.must_intents:
-            return list(self.binding.must_intents[:3])
+            return list(self.binding.must_intents[:1])
         return list(self.assigned_intent_ids)
 
     def drain_prefer_tactics(self) -> set[str] | None:

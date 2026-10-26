@@ -1,4 +1,7 @@
-"""赛道：红队(redteam)、CTF(flag)、SRC(src)。三赛道目标函数硬隔离。"""
+"""赛道只有两类：agent 测试、CTF(flag)。
+
+旧的 redteam / getshell / src 都归一成 agent。agent 多找漏洞，并把已证实危害做到 getshell。
+"""
 from __future__ import annotations
 
 import re
@@ -6,8 +9,10 @@ import re
 from .graph.model import SEVERITY_ORDER, display_finding_severity
 from .graph.rating_rubric import RATING_RUBRIC_BRIEF
 
-REDTEAM = "redteam"
+AGENT = "agent"
 FLAG = "flag"
+# 旧写入值。读入后一律归一成 agent，不再单独收工或单独计时。
+REDTEAM = "redteam"
 SRC = "src"
 
 # 用户可见角色名（代码标识 advisor/supervisor/commander 不改）
@@ -40,8 +45,9 @@ MEANS_LATERAL = "lateral"
 
 ULTIMATE_GOALS: dict[str, tuple[str, ...]] = {
     FLAG: (CTF_GETFLAG,),
+    AGENT: (RT_GETSHELL,),
     REDTEAM: (RT_GETSHELL,),
-    SRC: (SRC_HIGH,),
+    SRC: (RT_GETSHELL,),
 }
 MEANS_GOALS: tuple[str, ...] = (MEANS_PRIVESC, MEANS_LATERAL)
 GOAL_ALIASES: dict[str, str] = {
@@ -74,7 +80,9 @@ SRC_SKIP_CATEGORIES: frozenset[str] = frozenset({
 })
 
 SRC_POLICY_BRIEF = """\
-SRC 厂商关注的是漏洞**类型**（不是只挖这几条具体洞）：同一类型下所有变体/实例都要挖。
+agent测试的目的：发现更多漏洞，并提升已经证实的漏洞危害。两件事同时进行。
+每条线按侦察→找攻击面→深入利用：没有面就侦察；看见入口、参数或接口就深入利用；已报的洞同时把危害做实。不要等侦察全部结束才许打。
+漏洞类型是菜单（不是只挖这几条具体洞）：同一类型下所有变体/实例都要挖。
 11 类是菜单，按入口形态选该测的，不要每轮全开：有 HTML 汇才打 XSS，有 JSON/查询参数才打 SQLi，
 有 ping/exec 才打命令执行，有模板/反序列化才打代码执行，有 path/file 才打包含/任意文件，
 有身份/对象 ID 才打越权，有金额/订单才打逻辑，有配置/备份/密钥才打高危泄露，
@@ -88,14 +96,14 @@ phpinfo/指纹/Banner 不算漏洞。
 未授权只打到「角色不存在 / 参数不完整 / 空 data / ObjectId 报错」不能评高危或严重——打出非空业务数据，或真实领取/兑换/改价，或拖库/命令执行才能评高危/严重。
 能打到高危再加码：**读面铺开、写面克制**。只读/未授权/敏感字段按类型覆盖，不能停在第一条；每条危害用最小样本证明，禁止拖全表、禁止真改生产。
 真阳性：高危/严重必须二次验证且 evidence 含已证实危害（非同一条业务报错重放）；未过验证仍进漏洞页，标待验证。
-不限轮次；墙钟满 12 小时，或连续 30 轮没有新节点也没有新漏洞，硬停记失败（不是未完成）。入口连不上不暂停。
+不限轮次；墙钟满 6 小时，或连续 30 轮没有新节点也没有新漏洞，硬停记失败（不是未完成）。入口连不上不暂停。
 **隐身（让人感觉没来过）**：低速率、不留持久痕迹。隐身靠少写、不靠少读。
 禁止高危破坏：DoS、打满磁盘、删库删站、改生产配置、关服务、持久化 webshell。
 禁止无限制写垃圾：批量注册/灌评论/刷订单、INSERT/UPDATE 业务表、短信邮件轰炸。
 禁止破坏业务：不准 DROP/TRUNCATE/DELETE FROM；SQLi 只用 SELECT/布尔/报错证明；RCE 只写无害短 txt canary，取回后立刻删掉。
 """ + BUSINESS_SAFE_WRITE_BRIEF + """
 不算漏洞：phpinfo/指纹/Banner/目录列表；错误页回显的内网 IP；CSRF、开放重定向、前台弱口令。
-不夺旗、不以 getshell 收工。已验证 SSRF 必须 report_pivot_capability 扩网，且只走 SSRF 参数打内网；
+不夺旗。低/中/高危/严重都要报。已经证实的读文件、写入或凭证要把危害做到命令执行，`report_shell` 后收工。已验证 SSRF 必须 report_pivot_capability 扩网，且只走 SSRF 参数打内网；
 禁止 Kali 直连、禁止 socks/shell 横向（其它环境主机交给集群对应子项目）。
 """
 
@@ -111,21 +119,24 @@ _API_PATH_RE = re.compile(r"/api/[A-Za-z0-9_./-]+", re.I)
 
 
 def normalize_objective(obj: str | None) -> str:
-    """把 config.objective 归一到 redteam|flag|src。getshell 是 redteam 旧值；未知归 redteam。"""
+    """只返回 agent 或 flag。redteam / getshell / src 都是 agent。"""
     o = (obj or "").strip().lower()
     if o in ("flag", "ctf"):
         return FLAG
-    if o == "src":
-        return SRC
-    return REDTEAM
+    return AGENT
 
 
 def objective_allows_flag(obj: str | None) -> bool:
     return normalize_objective(obj) == FLAG
 
 
+def objective_is_agent(obj: str | None) -> bool:
+    return normalize_objective(obj) == AGENT
+
+
 def objective_is_src(obj: str | None) -> bool:
-    return normalize_objective(obj) == SRC
+    """旧名。非 CTF 都走 agent 测试。"""
+    return objective_is_agent(obj)
 
 
 def cfg_is_lab_src(cfg: dict | None) -> bool:
@@ -232,8 +243,6 @@ def is_run_complete(
             flags_score=flags_score,
             total_score=total_score,
         )
-    if o == SRC:
-        return False
     return redteam_ultimate_reached(achievements)
 
 
@@ -244,13 +253,14 @@ def hard_stop_exempt(
     achievements: list[str] | set[str] | None = None,
     verified_high: int = 0,
     verified_critical: int = 0,
+    untested_types: int | None = None,
 ) -> bool:
     o = normalize_objective(obj)
     if o == FLAG:
         return int(flags_correct or 0) > 0
-    if o == SRC:
-        return (int(verified_high or 0) + int(verified_critical or 0)) > 0
-    return redteam_ultimate_reached(achievements)
+    if untested_types is not None and int(untested_types) > 0:
+        return False
+    return (int(verified_high or 0) + int(verified_critical or 0)) > 0
 
 
 _TRIVIAL_ERROR_ECHO_RE = re.compile(

@@ -25,7 +25,8 @@ export default function App() {
                   <Route path="/vulns" element={<VulnsPage />} />
                   <Route path="/agents" element={<AgentsPage />} />
                   <Route path="/project/:id" element={<ProjectPage />} />
-                  <Route path="/settings" element={<SettingsPage />} />
+                  <Route path="/settings" element={<Navigate to="/settings/account" replace />} />
+                  <Route path="/settings/:section" element={<SettingsPage />} />
                   <Route path="/intro" element={<Navigate to="/" replace />} />
                   <Route path="/replay" element={<Navigate to="/" replace />} />
                 </Routes>

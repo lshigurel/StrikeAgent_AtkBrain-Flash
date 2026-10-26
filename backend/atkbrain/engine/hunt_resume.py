@@ -167,6 +167,28 @@ def cancel_project_status(
     return None
 
 
+async def resume_queued(manager) -> int:
+    """重启后按提交顺序把仍在排队的项目重新放进并发槽。"""
+    from ..db import db
+
+    rows = await db.fetchall(
+        """SELECT id FROM projects
+           WHERE status='queued' AND IFNULL(archived,0)=0
+           ORDER BY COALESCE(queued_at, updated_at) ASC"""
+    )
+    started = 0
+    for row in rows:
+        pid = str(row.get("id") or "")
+        if not pid or manager.is_running(pid) or manager.is_queued(pid):
+            continue
+        try:
+            manager.start(pid, hard_restart=False)
+            started += 1
+        except Exception as exc:
+            print(f"[startup] 恢复排队 {pid} 失败：{exc}")
+    return started
+
+
 async def start_saved_hunts(manager, db_running: list[str]) -> list[str]:
     """启动时把上次占槽的项目拉起来，数量不超过当前并发上限。"""
     from ..projects import get_project, update_status

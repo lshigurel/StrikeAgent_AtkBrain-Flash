@@ -149,17 +149,11 @@ async def request_full_score_stop(ctx: AgentContext) -> None:
 
 
 async def _finish_redteam_if_ready(ctx: AgentContext) -> str:
-    """红队拿到 getshell → 置位收工。"""
-    if normalize_objective(ctx.objective) != REDTEAM:
+    """命令执行已经落地：agent 测试收工。函数名保留给 report_shell。"""
+    if objective_allows_flag(getattr(ctx, "objective", None)):
         return ""
-    from ..memory.achievements import detect_achievements
-    from ..objective import redteam_new_ultimate
-    graph = await gstore.get_graph(ctx.project_id, heal=True)
-    ach = detect_achievements(graph, allows_flag=False)
-    if redteam_new_ultimate(ach, getattr(ctx, "achievements_at_start", None)):
-        ctx.goal_reached = True
-        return "**本项目完成**（已 getshell）。立即收工，不要再调用任何工具。"
-    return "红队最高指令是 GETSHELL（report_shell 即收工）。继续测→证→报高危/严重，推向命令执行。"
+    ctx.goal_reached = True
+    return "已证实命令执行，本猎收工。"
 
 
 def _norm_host(h: str) -> str:
@@ -266,7 +260,7 @@ async def _land_shell(
     """report_shell 与工具输出自动落图共用。"""
     ctx.shell_evidence = evidence or ""
     ctx.shell_access = access or ""
-    is_goal = normalize_objective(ctx.objective) == REDTEAM
+    is_goal = not objective_allows_flag(getattr(ctx, "objective", None))
     primary = _primary_host(ctx)
     host = _norm_host(host or "") or primary
     from ..config import settings
@@ -341,23 +335,6 @@ async def _land_shell(
     _append_shell_asset(ctx, host=host or "target", access=ctx.shell_access,
                         evidence=ctx.shell_evidence, channel=channel,
                         reconnect=reconnect)
-    if objective_is_src(ctx.objective):
-        ctx.postex_phase = ""
-        await emit(ctx.project_id, "shell",
-                   {"access": ctx.shell_access, "evidence": ctx.shell_evidence[:2000],
-                    "node_key": gkey, "host": host,
-                    "proof_canary": proof_canary, "proof_url": proof_url},
-                   run_id=ctx.run_id)
-        _schedule_milestone(
-            ctx, "high_critical_finding",
-            title=f"命令执行 ({ctx.shell_access or 'access'})".strip(),
-            category="rce", node_key=gkey,
-            evidence=(ctx.shell_evidence or "")[:400],
-        )
-        return _text(
-            "✅ 已验证命令执行（高危）。SRC 不转后渗、不以 shell 横向。"
-            "已验证 SSRF 才 report_pivot_capability。请独立 report_finding 后按厂商清单挖下一类。"
-        )
     ctx.postex_phase = "active"
     await emit(ctx.project_id, "shell",
                {"access": ctx.shell_access, "evidence": ctx.shell_evidence[:2000],
@@ -656,7 +633,7 @@ def _out_of_scope_hosts(ctx: AgentContext, *texts: str) -> list[str]:
                                        })
         if not why or h in out:
             continue
-        # 邻题入口仍拦；已扩容内网的同网同胞允许写图，Kali 直连仍由守卫拦截。
+        # 邻题入口仍拦；已扩容内网的同网同胞允许写图，本机直连仍由守卫拦截。
         if "其它题目入口" not in why:
             try:
                 from ..scope import same_pivot_lan
@@ -916,6 +893,7 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
                 "command": {"type": "string", "description": "要执行的 shell 命令"},
                 "rationale": {"type": "string", "description": "为什么执行此命令（简述攻击意图）"},
                 "timeout": {"type": "integer", "description": "超时秒数（可选；不传或 0 表示不限时）"},
+                "needs_confirm": {"type": "boolean", "description": "为 true 时本条命令先等人确认。拒绝只回到本工人，不终止项目"},
             },
             "required": ["command"],
         },
@@ -924,7 +902,14 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
         halted = halt_if_full_score(ctx)
         if halted:
             return halted
+        from ..engine.intent_gate import gate_intent, maybe_confirm_command
+        gated = await gate_intent(ctx)
+        if gated:
+            return _text(gated, is_error=True)
         command = args.get("command", "")
+        denied = await maybe_confirm_command(ctx, command, bool(args.get("needs_confirm")))
+        if denied:
+            return _text(denied, is_error=True)
         rationale = args.get("rationale", "")
         timeout = args.get("timeout")
         await emit(ctx.project_id, "tool", {
@@ -1026,6 +1011,10 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
         halted = halt_if_full_score(ctx)
         if halted:
             return halted
+        from ..engine.intent_gate import gate_intent
+        gated = await gate_intent(ctx)
+        if gated:
+            return _text(gated, is_error=True)
         url = args.get("url", "")
         method = args.get("method", "GET")
         headers = None
@@ -1046,6 +1035,16 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
         if res.get("blocked"):
             return _text(res["error"], is_error=True)
         if res.get("error"):
+            try:
+                from ..http_log import record_exchange
+                await record_exchange(
+                    ctx.project_id, run_id=ctx.run_id, method=method, url=url,
+                    request_headers=headers, request_body=data if isinstance(data, str) else "",
+                    status=res.get("status"), response_headers=res.get("headers"),
+                    response_body=res.get("body") or res.get("error") or "",
+                )
+            except Exception:
+                pass
             return _text(res["error"], is_error=True)
         touch = dict(res) if isinstance(res, dict) else {}
         touch.setdefault("url", url)
@@ -1097,7 +1096,77 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
                 body = body + "\n" + hop_note
         except Exception:
             pass
+        try:
+            from ..http_log import record_exchange
+            eid = await record_exchange(
+                ctx.project_id, run_id=ctx.run_id, method=method, url=url,
+                request_headers=headers, request_body=data if isinstance(data, str) else "",
+                status=res.get("status"), response_headers=res.get("headers"),
+                response_body=res.get("body") or "",
+            )
+            body = body + f"\n[exchange_id={eid}]"
+        except Exception:
+            pass
         return _text(body)
+
+    @tool(
+        "note_asset",
+        "把这一台新发现的主机或 IP 写入厂商资产库，并只把这一台标进本项目范围。"
+        "根域、同网段和没写明的 www 不会因此放行。整域、整段、整家厂商要单独确认。",
+        {
+            "type": "object",
+            "properties": {
+                "host": {"type": "string", "description": "主机名或 IP，不要写根域来代替一台主机"},
+            },
+            "required": ["host"],
+        },
+    )
+    async def note_asset(args: dict) -> dict:
+        from ..engine.intent_gate import gate_intent
+        gated = await gate_intent(ctx)
+        if gated:
+            return _text(gated, is_error=True)
+        from ..assets import remember_host
+        row = await remember_host(ctx.project_id, str(args.get("host") or ""), in_scope=True)
+        if not row:
+            return _text("没有入库。拒绝名单、空主机，或这不是一台可记录的主机。", is_error=True)
+        return _text(f"已记录 {row.get('kind')} {row.get('identity')}。只授权这一台，根域和同网段未授权。")
+
+    @tool(
+        "search_intent_log",
+        "只读检索本项目其它意图的描述和执行记录。不能改那些会话，也不能把两个会话并成一个。",
+        {
+            "type": "object",
+            "properties": {
+                "keyword": {"type": "string"},
+            },
+            "required": ["keyword"],
+        },
+    )
+    async def search_intent_log(args: dict) -> dict:
+        from ..db import db
+        word = str(args.get("keyword") or "").strip()
+        if not word:
+            return _text("要有关键字。", is_error=True)
+        like = f"%{word[:80]}%"
+        intents = await db.fetchall(
+            """SELECT id, description, result_summary FROM intents
+               WHERE project_id=? AND (
+                 description LIKE ? OR IFNULL(result_summary,'') LIKE ? OR IFNULL(rationale,'') LIKE ?
+               ) LIMIT 20""",
+            (ctx.project_id, like, like, like),
+        )
+        events = await db.fetchall(
+            """SELECT id, type, payload FROM events
+               WHERE project_id=? AND payload LIKE ? ORDER BY id DESC LIMIT 20""",
+            (ctx.project_id, like),
+        )
+        lines = ["只读检索："]
+        for row in intents:
+            lines.append(f"- 意图 {row.get('id')} {row.get('description')} {row.get('result_summary') or ''}")
+        for row in events:
+            lines.append(f"- 事件 {row.get('id')} {row.get('type')} {str(row.get('payload') or '')[:180]}")
+        return _text("\n".join(lines) if len(lines) > 1 else "没有匹配。")
 
     @tool(
         "add_node",
@@ -1184,6 +1253,13 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
         if ntype == "credential":
             _write_creds_asset(ctx, host=_primary_host(ctx) or "unknown",
                                title=args["title"], detail=args.get("detail") or "")
+        if str(args.get("type") or "") == "vuln":
+            wake = getattr(ctx, "wake_finding_review", None)
+            if callable(wake):
+                try:
+                    wake()
+                except Exception:
+                    pass
         return _text(f"节点已记录: {row['key']} ({row['type']}, {row['severity']}, risk={row['risk_score']})")
 
     @tool(
@@ -1239,15 +1315,15 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
         "report_finding",
         "上报一个漏洞。必须先验证真实性：evidence 或可复现 PoC 缺一不可，否则记为未验证。"
         "二次验证与红队评级可以分开写：首次上报两者都不填；只交二次则必须独立再看到同样危害才 secondary_verified=true，并写至少 40 字这次新看到了什么；"
-        "没证明则 verification_status=excluded 且 secondary_verified=false，排除只针对这一条。"
-        "只交评级则 redteam_rating 加至少 40 字为何这个级；两者都交则三者齐全。"
+        "没证明则 verification_status=excluded 且 secondary_verified=false，理由写清二次验证失败原因。失败只针对这一条。"
+        "只交评级则填齐 CVSS 3.1 八项基础指标，再加至少 40 字说明为什么这样打；两者都交则二次过程、八项和理由都要有。"
+        "不要手填 redteam_rating 或 cvss 分数，系统按 NVD 的 CVSS v3.1 基础分计算并写入级别。"
         "漏洞页五段 report_summary/report_impact/report_rating/report_repro/report_fix 由专职撰稿补，复核员不要写。"
         "五段人可见文字必须跟系统提示末尾的 OUTPUT_LANG / 输出语言契约一致。"
         "同一 CVE 或同一利用接口已有条目则回写（带 finding_id 或沿用原 node_key），"
         "禁止换标题/node_key 再造一条。"
-        "redteam_rating 按四级表（严重/高危/中危/低危）对号入座，禁止抬级或压级。"
-        "category=rce 仅当证据含命令执行回显；版本命中或仅白名单文件写不能报 rce/critical。"
-        "任意文件读写默认中危，不要压成低危；一般 SQLi/存储 XSS/越权进后台不要抬成高危。"
+        "定性用 NVD 的 CVSS v3.x 表：低危 0.1–3.9、中危 4.0–6.9、高危 7.0–8.9、严重 9.0–10.0。三项影响都是 None 时 NVD 不打分。"
+        "category=rce 仅当证据含命令执行回显；没打成执行时不要按代码执行把影响打成完全失控。"
         "红队完成条件是 getshell（report_shell）。finding 不单独收工。",
         {
             "type": "object",
@@ -1260,11 +1336,19 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
                 "evidence": {"type": "string", "description": "真实性证据（完整请求/响应片段、命令输出，勿截断关键回显）"},
                 "poc_curl": {"type": "string", "description": "可手工复现的 curl（真实请求，禁止占位）"},
                 "poc_python": {"type": "string", "description": "可手工复现的 python"},
-                "cvss": {"type": "number"},
+                "cvss_av": {"type": "string", "enum": ["N", "A", "L", "P"], "description": "CVSS 3.1 攻击向量 AV"},
+                "cvss_ac": {"type": "string", "enum": ["L", "H"], "description": "CVSS 3.1 攻击复杂度 AC"},
+                "cvss_pr": {"type": "string", "enum": ["N", "L", "H"], "description": "CVSS 3.1 所需权限 PR。打之前就有的权限"},
+                "cvss_ui": {"type": "string", "enum": ["N", "R"], "description": "CVSS 3.1 用户交互 UI"},
+                "cvss_s": {"type": "string", "enum": ["U", "C"], "description": "CVSS 3.1 范围 S"},
+                "cvss_c": {"type": "string", "enum": ["N", "L", "H"], "description": "NVD CVSS 3.1 机密性 C"},
+                "cvss_i": {"type": "string", "enum": ["N", "L", "H"], "description": "NVD CVSS 3.1 完整性 I"},
+                "cvss_a": {"type": "string", "enum": ["N", "L", "H"], "description": "NVD CVSS 3.1 可用性 A"},
+                "cvss_vector": {"type": "string", "description": "可选。CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H。八项都填了就以八项为准"},
                 "verification_status": {
                     "type": "string",
                     "enum": ["pending", "verified", "excluded"],
-                    "description": "二次没有独立证明同样危害时填 excluded，且 secondary_verified=false。排除只表示这一条没被证明，不是否定这类漏洞",
+                    "description": "二次没有独立证明同样危害时填 excluded，且 secondary_verified=false。这表示本条二次验证失败，不是否定这类漏洞",
                 },
                 "secondary_verified": {
                     "type": "boolean",
@@ -1273,11 +1357,11 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
                 "redteam_rating": {
                     "type": "string",
                     "enum": ["critical", "high", "medium", "low", "info"],
-                    "description": "红队侧可利用评级。只做评级或两件事一起做时填写。按四级表：critical严重 / high高危 / medium中危 / low低危，禁止跳级或压级",
+                    "description": "不要手填。系统按 NVD CVSS 3.1 基础分写入：low低危 / medium中危 / high高危 / critical严重",
                 },
                 "redteam_rating_rationale": {
                     "type": "string",
-                    "description": "二次怎么打和/或为何是这个级，按本轮任务写，至少 40 字",
+                    "description": "二次怎么打，以及 CVSS 八项为什么这样打。至少 40 字。不要自己写分数",
                 },
                 "report_summary": {
                     "type": "string",
@@ -1311,6 +1395,21 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
                     "type": "string",
                     "description": "二次验证时填已入库漏洞 id，避免重复造条",
                 },
+                "http_refs": {
+                    "type": "array",
+                    "description": "按复现顺序绑定本次猎面的 exchange_id。role 只能是对照、证明、复核、辅助。每条都要带 method、url、status、summary，对不上就不要填",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string"},
+                            "role": {"type": "string"},
+                            "method": {"type": "string"},
+                            "url": {"type": "string"},
+                            "status": {"type": "integer"},
+                            "summary": {"type": "string"},
+                        },
+                    },
+                },
             },
             "required": ["severity", "category", "title"],
         },
@@ -1343,7 +1442,34 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
                 + _oos_hint(oos),
                 is_error=True,
             )
+        from ..graph.cvss31 import attach_vector, base_score, metrics_from_args, nvd_reject_reason
+        from ..graph.finding_claim import claims_rce, execution_impact_proven
         from ..graph.model import secondary_review_error
+        metrics, attempted = metrics_from_args(args)
+        scored = None
+        if attempted and not metrics:
+            return _text(
+                "⛔ 二次验证评级要按 NVD 的 CVSS 3.1 基础分。请填齐 cvss_av、cvss_ac、cvss_pr、cvss_ui、cvss_s、cvss_c、cvss_i、cvss_a，不要手填级别或分数。",
+                is_error=True,
+            )
+        if metrics:
+            claim_bits = (
+                str(args.get("title") or ""), str(args.get("description") or ""),
+                str(args.get("evidence") or ""), str(args.get("poc_curl") or ""),
+                str(args.get("poc_python") or ""),
+            )
+            if claims_rce(*claim_bits, category=args.get("category")) and not execution_impact_proven(*claim_bits):
+                if "H" in (metrics["C"], metrics["I"], metrics["A"]):
+                    return _text(
+                        "⛔ 没有命令执行回显，不能按代码执行的完全失控把影响打成 H。NVD 按已确认的漏洞打分。",
+                        is_error=True,
+                    )
+            rejected = nvd_reject_reason(metrics)
+            if rejected:
+                return _text(f"⛔ {rejected}", is_error=True)
+            scored = base_score(metrics)
+            args["redteam_rating"] = scored.rating
+            args["cvss"] = scored.score
         pair_err = secondary_review_error(
             _truthy(args.get("secondary_verified")),
             args.get("redteam_rating"),
@@ -1352,6 +1478,8 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
         )
         if pair_err:
             return _text(f"⛔ {pair_err}", is_error=True)
+        if scored is not None:
+            args["redteam_rating_rationale"] = attach_vector(args.get("redteam_rating_rationale"), scored)
         f = FindingIn(
             node_key=args.get("node_key"), severity=args.get("severity", "medium"),
             category=args.get("category", "info"), title=args["title"],
@@ -1372,6 +1500,14 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
             report_fix=args.get("report_fix"),
         )
         row = await gstore.add_finding(ctx.project_id, f, run_id=ctx.run_id)
+        if isinstance(row, dict) and args.get("http_refs"):
+            try:
+                from ..http_log import bind_finding
+                bound = await bind_finding(str(row.get("id") or ""), args.get("http_refs"))
+                row["http_bound"] = bound.get("bound")
+                row["http_skipped"] = bound.get("skipped")
+            except Exception:
+                pass
         if isinstance(row, dict):
             from ..graph.model import normalize_redteam_rating as _nrt
             from ..review.flags import get_review_flags
@@ -1399,7 +1535,7 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
                     pass
         nk = str(args.get("node_key") or "").strip()
         obj = normalize_objective(ctx.objective)
-        src_clue = obj == SRC and (
+        src_clue = objective_is_src(obj) and (
             (isinstance(row, dict) and row.get("verify_reason") == "src_impact_not_proven")
             or not src_impact_proven(f)
         )
@@ -1437,18 +1573,22 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
             extra.append("已验证")
         extra.append("已二次验证" if sec else "未二次验证")
         if rt:
-            extra.append(f"红队评级 {rt}")
+            score_txt = ""
+            if isinstance(row, dict) and row.get("cvss") is not None:
+                try:
+                    score_txt = f" {float(row['cvss']):.1f}"
+                except (TypeError, ValueError):
+                    score_txt = ""
+            extra.append(f"NVD CVSS 3.1{score_txt} {rt}")
         if isinstance(row, dict) and row.get("merged"):
             extra.append("已并入已有条目，未重复造条")
         tail = "；".join(extra)
         rt_note = ""
-        if obj == REDTEAM:
-            rt_note = " 红队请继续推进直至 report_shell。"
-        elif obj == SRC:
+        if objective_is_src(obj):
             if src_clue:
                 rt_note = " 已进漏洞页。当前证据偏业务报错，不能评高危；打出非空业务数据或领取/兑换/拖库/RCE 后再升评级。"
             else:
-                rt_note = " 已进漏洞页。不要停在这一条，继续按厂商清单挖。"
+                rt_note = " 已进漏洞页。继续找新漏洞；这条若还能读文件、写文件或拿到凭证，就把它做到命令执行。"
         if isinstance(row, dict):
             try:
                 from ..memory.evolve import finding_qualifies_for_evolve
@@ -1861,6 +2001,11 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
                             "description": {"type": "string"},
                             "rationale": {"type": "string"},
                             "est_success": {"type": "number"},
+                            "depends_on": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "前置意图 id。前置结果还没落图时，下一步不会派",
+                            },
                         },
                         "required": ["description"],
                     },
@@ -1892,6 +2037,7 @@ def build_atkbrain_tools(ctx: AgentContext) -> list:
                     est_success=float(it.get("est_success", 0.5)),
                     strategy_key=sk,
                     priority=float(it.get("priority") or it.get("est_success", 0.5)),
+                    depends_on=list(it.get("depends_on") or []),
                 ),
                 run_id=ctx.run_id,
             )

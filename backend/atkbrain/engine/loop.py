@@ -87,7 +87,7 @@ def is_transient_resource_error(exc: BaseException) -> bool:
 
 
 def _graph_summary(graph: dict, peer_entries: list[str] | None = None, current_entry: str = "",
-                   objective: str = "", workspace_dir: str = "") -> str:
+                   objective: str = "", workspace_dir: str = "", untested_brief: str = "") -> str:
     from .supervisor_brief import expand_peer_node_keys, highlight_chain_line, plan_cites_peer_entry
 
     stats = graph.get("stats", {})
@@ -156,6 +156,8 @@ def _graph_summary(graph: dict, peer_entries: list[str] | None = None, current_e
                 lines.append(cov)
     except Exception:
         pass
+    if (untested_brief or "").strip():
+        lines.append(untested_brief.strip())
     return "\n".join(lines)
 
 
@@ -734,25 +736,48 @@ def _ultimate_goal_met(graph: dict, agent, objective: str | None) -> bool:
     )
 
 
-async def _sync_redteam_goal(project_id: str, agent, objective: str | None) -> bool:
-    """红队：本 run 新达成 getshell → 置位 goal_reached。历史图上的旧达成不收工。"""
-    from ..objective import REDTEAM, normalize_objective, redteam_new_ultimate
-    from ..memory.achievements import detect_achievements
+async def _src_high_is_not_done(project_id: str, agent, objective: str | None) -> None:
+    """范围内还有未测资产时，仅有高危不能收工。getshell 已落地则保持收工。"""
+    from ..assets import untested_in_scope_count
+    from ..objective import objective_is_src, redteam_ultimate_reached
 
-    if normalize_objective(objective) != REDTEAM:
+    if not objective_is_src(objective):
+        return
+    if not getattr(agent.ctx, "goal_reached", False):
+        return
+    try:
+        from ..graph import store as gstore
+        from ..memory.achievements import detect_achievements
+
+        graph = await gstore.get_graph(project_id)
+        if redteam_ultimate_reached(detect_achievements(graph, allows_flag=False)):
+            return
+    except Exception:
+        return
+    try:
+        left = await untested_in_scope_count(project_id)
+    except Exception:
+        return
+    if left > 0:
+        agent.ctx.goal_reached = False
+
+
+async def _sync_redteam_goal(project_id: str, agent, objective: str | None) -> bool:
+    """命令执行已落成 goal:shell 时收工。"""
+    from ..graph import store as gstore
+    from ..memory.achievements import detect_achievements
+    from ..objective import objective_allows_flag, redteam_ultimate_reached
+
+    if objective_allows_flag(objective):
         return False
-    if getattr(agent.ctx, "goal_reached", False):
-        return True
     try:
         graph = await gstore.get_graph(project_id)
     except Exception:
         return False
-    ach = detect_achievements(graph, allows_flag=False)
-    baseline = getattr(agent.ctx, "achievements_at_start", None)
-    if redteam_new_ultimate(ach, baseline):
-        agent.ctx.goal_reached = True
-        return True
-    return False
+    if not redteam_ultimate_reached(detect_achievements(graph, allows_flag=False)):
+        return False
+    agent.ctx.goal_reached = True
+    return True
 
 
 async def _create_run(project_id: str) -> str:
@@ -898,7 +923,9 @@ async def _persist_hunt_clock(project_id: str, rid: str, hunt: dict) -> None:
     try:
         row = await get_project(project_id)
         cfg = dict((row or {}).get("config") or {})
-        cfg["hunt"] = hunt
+        stamped = dict(hunt)
+        stamped["elapsed_as_of"] = time.time()
+        cfg["hunt"] = stamped
         await update_config(project_id, cfg)
     except Exception:
         pass
@@ -1075,6 +1102,7 @@ async def run_project_loop(manager: RunManager, project_id: str) -> None:
         await emit(project_id, "status", {"status": "error", "reason": "llm_key_missing"})
         return
 
+    await update_status(project_id, "queued")
     await emit(project_id, "status", {"status": "queued", "reason": "concurrency"})
 
     agent: ProjectAgent | None = None
@@ -1090,7 +1118,8 @@ async def run_project_loop(manager: RunManager, project_id: str) -> None:
     applied_lesson_ids: list[str] = []
     try:
         handle.slot_kind = hunt_slot_kind(project, objective)
-        await manager.slot_sem(handle.slot_kind).acquire()
+        from .scheduler import acquire_slot_fifo
+        await acquire_slot_fifo(project_id, manager.slot_sem(handle.slot_kind))
         handle.slot_held = True
         if is_benchmark:
             refuse = await bmk.gate_start_against_closed_env(project)
@@ -1518,6 +1547,20 @@ async def run_project_loop(manager: RunManager, project_id: str) -> None:
                 ended_att = 0
         pass_n = ctf_pass_index(ended_real_attempts=ended_att)
         runtime_hard = hunt_runtime_hard_stop_sec(objective, pass_n=pass_n)
+        _clocks = ((project or {}).get("config") or {}).get("template_clocks") or {}
+        if isinstance(_clocks, dict) and _clocks:
+            if uses_ctf_hunt_clocks(objective):
+                _clock_keys = ("runtime_hard_stop_sec",)
+            else:
+                _clock_keys = (
+                    "agent_runtime_hard_stop_sec",
+                    "src_runtime_hard_stop_sec",
+                    "redteam_runtime_hard_stop_sec",
+                )
+            for _ck in _clock_keys:
+                if _clocks.get(_ck) is not None:
+                    runtime_hard = int(_clocks[_ck])
+                    break
         cap_txt = format_duration_zh(runtime_hard)
         if ctf_clocks:
             await emit(
@@ -1577,6 +1620,7 @@ async def run_project_loop(manager: RunManager, project_id: str) -> None:
             await emit(project_id, "log", {"level": "info", "message": summary}, run_id=rid)
         while pause_reason is None and (max_turns <= 0 or turn < max_turns):
             await _sync_redteam_goal(project_id, agent, objective)
+            await _src_high_is_not_done(project_id, agent, objective)
             if agent.ctx.goal_reached:
                 goal = True
                 await emit(project_id, "status", {"status": "goal_reached", "turn": turn}, run_id=rid)
@@ -2077,7 +2121,7 @@ async def run_project_loop(manager: RunManager, project_id: str) -> None:
                 old_block = format_binding_block(bind)
                 new_block = format_binding_block(updated)
                 supervisor.binding = updated
-                supervisor.assigned_intent_ids = list(updated.must_intents[:3])
+                supervisor.assigned_intent_ids = list(updated.must_intents[:1])
                 bind = updated
                 if not human_steers:
                     if old_block and new_block and old_block in steering:
@@ -2123,6 +2167,8 @@ async def run_project_loop(manager: RunManager, project_id: str) -> None:
                 and not bind_flags.get("has_verified_asset"),
                 graph=graph,
             )
+            if len(assigned) > 1:
+                assigned = assigned[:1]
             if assigned:
                 await gstore.claim_intents(project_id, [i["id"] for i in assigned if i.get("id")], run_id=rid)
                 await emit(
@@ -2154,6 +2200,13 @@ async def run_project_loop(manager: RunManager, project_id: str) -> None:
                     agent.ctx.hop_auth_situation = True
             except Exception:
                 pass
+            untested_brief = ""
+            try:
+                from ..assets import format_untested_brief, untested_in_scope
+                untested_brief = format_untested_brief(await untested_in_scope(project_id))
+            except Exception:
+                untested_brief = ""
+            agent.ctx.intent_closed = False
             instruction = _build_instruction(
                 turn, target, graph, open_intents, steering, objective,
                 assigned=assigned, brief=brief, postex_phase=agent.ctx.postex_phase,
@@ -2163,6 +2216,7 @@ async def run_project_loop(manager: RunManager, project_id: str) -> None:
                 entry_surface=list(getattr(agent.ctx, "entry_surface", None) or []),
                 lock_intents=False, has_human=bool(human_steers),
                 workspace_dir=getattr(agent, "workspace_dir", "") or "",
+                untested_brief=untested_brief,
             )
             if hang_note:
                 instruction = f"{hang_note}\n\n{instruction}"
@@ -2199,7 +2253,9 @@ async def run_project_loop(manager: RunManager, project_id: str) -> None:
                     turn_timeout = remaining if turn_timeout <= 0 else min(remaining, turn_timeout)
                 hang_sec = float(getattr(settings, "turn_hang_sec", 0) or 0)
                 try:
-                    from ..agents.prompts import default_fanout_roles
+                    from ..agents.prompts import (
+                        default_fanout_roles, ensure_live_page_reader, graph_needs_rce_hunter,
+                    )
                     if human_steers:
                         subs = default_fanout_roles(objective)
                     else:
@@ -2210,7 +2266,12 @@ async def run_project_loop(manager: RunManager, project_id: str) -> None:
                         ]
                         if not subs:
                             subs = default_fanout_roles(objective)
+                    subs = ensure_live_page_reader(
+                        subs, objective, http=bool(bind_flags.get("has_http_service")),
+                        keep_rce=graph_needs_rce_hunter(graph),
+                    )
                     agent.ctx.fanout_roles = subs
+                    agent.ctx.keep_path_enum = bool(getattr(bind, "keep_path_enum", False))
                 except Exception:
                     pass
                 result = await _run_turn_guarded(
@@ -2456,18 +2517,39 @@ async def run_project_loop(manager: RunManager, project_id: str) -> None:
                         await _save_hunt(completed_turn)
                         continue
             except asyncio.CancelledError:
+                await _src_high_is_not_done(project_id, agent, objective)
                 if agent.ctx.goal_reached:
                     goal = True
                     await emit(project_id, "status", {"status": "goal_reached", "turn": turn}, run_id=rid)
                     break
                 raise
             except Exception as e:  # DSH/会话错误：记录；致命错误立刻开全新会话，避免空转打爆
+                await _src_high_is_not_done(project_id, agent, objective)
                 if agent.ctx.goal_reached:
                     goal = True
                     await emit(project_id, "status", {"status": "goal_reached", "turn": turn}, run_id=rid)
                     break
                 msg = str(e)
                 await emit(project_id, "log", {"level": "error", "message": f"本轮出错: {e}"}, run_id=rid)
+                from .model_chain import advance_model_chain, looks_like_model_failure
+                if looks_like_model_failure(msg):
+                    switched = await advance_model_chain(project_id)
+                    if switched:
+                        agent.model = switched
+                        await emit(
+                            project_id, "log",
+                            {"level": "info",
+                             "message": f"当前模型失败，已切到下一条 {switched}。已落图的意图不重放。"},
+                            run_id=rid,
+                        )
+                        try:
+                            await agent.begin_fresh_session()
+                            agent.set_run(rid)
+                        except Exception:
+                            pass
+                        completed_turn = turn
+                        await _save_hunt(completed_turn)
+                        continue
                 fatal = supervisor.note_exec_fault(msg)
                 if fatal:
                     for it in assigned:
@@ -2554,6 +2636,7 @@ async def run_project_loop(manager: RunManager, project_id: str) -> None:
                 await asyncio.sleep(1.5)
 
             await _sync_redteam_goal(project_id, agent, objective)
+            await _src_high_is_not_done(project_id, agent, objective)
             if agent.ctx.goal_reached:
                 goal = True
                 await emit(project_id, "status", {"status": "goal_reached", "turn": turn}, run_id=rid)
@@ -2660,24 +2743,23 @@ async def run_project_loop(manager: RunManager, project_id: str) -> None:
             await _save_hunt(completed_turn)
             from .advisor_schedule import stall_pause_due
             from ..objective import objective_allows_flag, objective_is_src
-            stall_limit = int(getattr(settings, "loop_stall_limit_redteam", 0)
+            stall_limit = int(getattr(settings, "loop_stall_limit_agent", 0)
                               or getattr(settings, "loop_stall_limit", 10) or 0)
             if uses_ctf_hunt_clocks(objective):
                 try:
                     stall_limit = int(getattr(settings, "loop_stall_limit_flag", 0) or 0)
                 except (TypeError, ValueError):
                     stall_limit = 0
-            elif objective_is_src(objective):
-                try:
-                    stall_limit = int(
-                        getattr(settings, "loop_stall_limit_src", stall_limit) or stall_limit
-                    )
-                except (TypeError, ValueError):
-                    pass
-            elif objective == "flag":
-                stall_limit = int(
-                    getattr(settings, "loop_stall_limit_flag", stall_limit) or stall_limit
-                )
+            _stall_clocks = ((project or {}).get("config") or {}).get("template_clocks") or {}
+            if isinstance(_stall_clocks, dict):
+                if uses_ctf_hunt_clocks(objective):
+                    if _stall_clocks.get("loop_stall_limit") is not None:
+                        stall_limit = int(_stall_clocks["loop_stall_limit"])
+                else:
+                    for _sk in ("loop_stall_limit_agent", "loop_stall_limit_src", "loop_stall_limit_redteam"):
+                        if _stall_clocks.get(_sk) is not None:
+                            stall_limit = int(_stall_clocks[_sk])
+                            break
             nprog = int(getattr(supervisor, "no_progress", 0) or 0)
             due = stall_pause_due(nprog, stall_limit)
             if due and not objective_allows_flag(objective) and not objective_is_src(objective):
@@ -2917,13 +2999,13 @@ async def run_project_loop(manager: RunManager, project_id: str) -> None:
             asyncio.create_task(bmk.autopilot_tick(parent_id))
 
 
-def _build_instruction(turn, target, graph, open_intents, steering, objective="getshell", assigned=None, brief="", postex_phase="", evolution="", peer_entries=None, entry_kind="", entry_addrs=None, entry_surface=None, lock_intents=False, has_human=False, workspace_dir="") -> str:
+def _build_instruction(turn, target, graph, open_intents, steering, objective="getshell", assigned=None, brief="", postex_phase="", evolution="", peer_entries=None, entry_kind="", entry_addrs=None, entry_surface=None, lock_intents=False, has_human=False, workspace_dir="", untested_brief="") -> str:
     from ..agents.prompts import build_turn_instruction
     return build_turn_instruction(
         turn=turn, target=target,
         graph_summary=_graph_summary(
             graph, peer_entries=peer_entries, current_entry=target, objective=objective,
-            workspace_dir=workspace_dir,
+            workspace_dir=workspace_dir, untested_brief=untested_brief,
         ),
         intents=_intents_text(
             open_intents, assigned=assigned or [], peer_entries=peer_entries, lock=lock_intents,

@@ -39,8 +39,9 @@
  --coral-deep:var(--primary-active);
  --hair:var(--hairline);
  --crit:var(--error);
- --high:var(--warning);
- --med:var(--muted-soft);
+ --high:#cc785c;
+ --med:#d4a017;
+ --low:#5db8a6;
  --ok:var(--success);
  --dark:var(--surface-dark);
 }
@@ -96,19 +97,19 @@ section.sec{margin-top:64px}
 .chart-card h4{font-size:15px;margin-bottom:14px;color:var(--body-strong)}
 .chart-card .note{font-size:12.5px;color:var(--muted);margin-top:8px}
 /* ---------- 资产卡片 ---------- */
-.assets{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
-.asset{background:var(--surface-card);border:1px solid var(--hairline);border-radius:12px;padding:18px 20px;display:flex;flex-direction:column;gap:8px;box-shadow:0 6px 18px rgba(20,20,19,.04)}
+.assets{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.asset{background:var(--surface-card);border:1px solid var(--hairline);border-radius:12px;padding:18px 20px;display:flex;flex-direction:column;gap:8px;box-shadow:0 6px 18px rgba(20,20,19,.04);min-width:0;overflow:hidden}
 .asset.danger{}
 .asset.warn{}
-.asset .a-name{font-weight:700;color:var(--body-strong);font-size:15px;font-family:ui-monospace,Consolas,monospace}
-.asset .a-role{font-size:13px;color:var(--muted)}
+.asset .a-name{font-weight:700;color:var(--body-strong);font-size:15px;font-family:ui-monospace,Consolas,monospace;overflow-wrap:anywhere;word-break:break-word}
+.asset .a-role{font-size:13px;color:var(--muted);overflow-wrap:anywhere}
 .asset .a-badges{display:flex;gap:6px;flex-wrap:wrap}
 .chip{font-size:11.5px;border-radius:999px;padding:2px 10px;font-weight:600;border:1px solid var(--hairline);background:var(--surface-soft);color:var(--muted)}
 .chip.crit{background:rgba(198,69,69,.10);border-color:rgba(198,69,69,.35);color:var(--crit)}
-.chip.high{background:rgba(212,160,23,.12);border-color:rgba(212,160,23,.4);color:#a07c10}
+.chip.high{background:rgba(204,120,92,.14);border-color:rgba(204,120,92,.45);color:#a9583e}
 .chip.ok{background:rgba(93,184,114,.12);border-color:rgba(93,184,114,.4);color:#3e8f52}
 .chip.teal{background:rgba(93,184,166,.12);border-color:rgba(93,184,166,.4);color:#2f8575}
-.asset .a-desc{font-size:13px;color:var(--body)}
+.asset .a-desc{font-size:13px;color:var(--body);overflow-wrap:anywhere;word-break:break-word}
 .asset .a-line{font-size:12.5px;color:var(--muted);border-top:1px dashed var(--hairline);padding-top:8px}
 /* ---------- 漏洞卡片 ---------- */
 .vf{background:var(--surface-card);border:1px solid var(--hairline);border-radius:12px;margin-bottom:28px;overflow:hidden;position:relative}
@@ -123,8 +124,8 @@ section.sec{margin-top:64px}
 .sev-chip{font-size:12px;font-weight:700;border-radius:6px;padding:3px 12px;color:#fff}
 .sev-chip.crit{background:var(--crit)}
 .sev-chip.high{background:var(--high)}
-.sev-chip.med{background:var(--muted-soft)}
-.sev-chip.low{background:var(--muted)}
+.sev-chip.med{background:var(--med)}
+.sev-chip.low{background:var(--low)}
 .vmeta{font-size:12.5px;color:var(--muted);margin-top:8px;display:flex;gap:14px;flex-wrap:wrap}
 .vbody{padding:6px 24px 20px 24px}
 .vsec{margin-top:18px}
@@ -170,11 +171,13 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13.5px;background:var(--
 .sum-card ul li::before{content:"";position:absolute;left:0;top:13px;width:6px;height:6px;border-radius:50%;background:var(--primary);opacity:.75}
 .sum-card .concl{margin:0;padding:0;list-style:none}
 .sum-card .concl li{padding:8px 0;border-bottom:1px dashed var(--hairline-soft);font-size:13.5px;line-height:1.6;display:flex;gap:10px;align-items:flex-start}
+.sum-card .concl li::before{content:none}
 .sum-card .concl li:last-child{border-bottom:0}
 .sum-card .tag-sev{flex:0 0 auto;font-size:11px;font-weight:800;padding:2px 8px;border-radius:6px;margin-top:2px}
 .sum-card .tag-sev.crit{background:rgba(198,69,69,.12);color:var(--error)}
-.sum-card .tag-sev.high{background:rgba(212,160,23,.14);color:#a07c10}
-.sum-card .tag-sev.med{background:rgba(142,139,130,.14);color:var(--muted)}
+.sum-card .tag-sev.high{background:rgba(204,120,92,.16);color:#a9583e}
+.sum-card .tag-sev.med{background:rgba(212,160,23,.16);color:#8a6a10}
+.sum-card .tag-sev.low{background:rgba(93,184,166,.16);color:#2f7d6e}
 .sum-foot{margin-top:14px;font-size:12.5px;color:var(--muted);line-height:1.7;background:var(--surface-soft);border:1px solid var(--hairline);border-radius:12px;padding:12px 16px}
 /* 验证图例放 SVG 外，避免裁切 */
 .verify-panel{display:flex;gap:20px;align-items:center;flex-wrap:wrap}
@@ -193,7 +196,9 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13.5px;background:var(--
 .pn .pt{font-size:12.5px;font-weight:700;color:var(--ink);line-height:1.3;margin-bottom:2px}
 .pn .pd{font-size:11px;color:var(--muted);line-height:1.4}
 .pn.info{border-color:rgba(93,184,166,.55)}.pn.info .pk{color:var(--accent-teal)}
-.pn.warn{border-color:rgba(232,165,90,.65)}.pn.warn .pk{color:#c4842a}
+.pn.svc{border-color:rgba(62,120,194,.55)}.pn.svc .pk{color:#3E78C2}
+.pn.warn{border-color:rgba(230,180,34,.75)}.pn.warn .pk{color:#E6B422}
+.pn.hold{border-color:#FCC0C7}.pn.hold .pk{color:#c47b86}
 .pn.crit{border-color:rgba(198,69,69,.55)}.pn.crit .pk{color:var(--error)}
 .pn.goal{background:var(--error);border-color:var(--error);color:#fff;box-shadow:0 6px 16px rgba(198,69,69,.26)}
 .pn.goal .pk{color:#ffd0d0}.pn.goal .pt{color:#fff}.pn.goal .pd{color:rgba(255,255,255,.88)}

@@ -8,6 +8,8 @@ from typing import Any
 from .model import SEVERITY_ORDER, normalize_redteam_rating, normalize_severity
 
 _CVE_RE = re.compile(r"cve-\d{4}-\d{4,}", re.I)
+_ENDPOINT_RE = re.compile(r"https?://([^/\s'\"?#]+)([^\s'\"?#]*)", re.I)
+_BARE_PATH_RE = re.compile(r"(?<![\w./-])(/[a-z0-9_./~-]{2,160})", re.I)
 _AJAX_ACTION_RE = re.compile(
     r"fusion_form_submit_ajax|fusion_form_update_view|action=fusion_form_[a-z0-9_]+",
     re.I,
@@ -61,8 +63,31 @@ def claims_rce(*parts: Any, category: str = "") -> bool:
     return "rce" in blob or "命令执行" in blob or "getshell" in blob
 
 
-def finding_dedup_keys(*parts: Any) -> set[str]:
-    """同一 CVE 或同一利用接口视为一条。没有这类锚点则不合并。"""
+def _norm_endpoint(*parts: Any) -> str:
+    """规范化路径：去 query，小写，去掉末尾斜杠。有主机时带上主机，避免不同站点并成一条。"""
+    blob = _blob(*parts)
+    m = _ENDPOINT_RE.search(blob)
+    if m:
+        host = m.group(1).lower().rstrip(".")
+        path = (m.group(2) or "/").rstrip("/") or "/"
+        if path == "/":
+            return ""
+        return f"{host}{path.lower()}"
+    bare = _BARE_PATH_RE.search(blob)
+    if not bare:
+        return ""
+    path = bare.group(1).rstrip("/") or "/"
+    if path == "/":
+        return ""
+    return path.lower()
+
+
+def finding_dedup_keys(
+    *parts: Any,
+    category: str = "",
+    endpoint_parts: tuple[Any, ...] | None = None,
+) -> set[str]:
+    """同一 CVE、同一利用接口，或同一路径加同一类型视为一条。标题不参与路径键。"""
     blob = _blob(*parts).lower()
     keys: set[str] = set()
     for m in _CVE_RE.findall(blob):
@@ -71,18 +96,29 @@ def finding_dedup_keys(*parts: Any) -> set[str]:
         keys.add("ep:" + re.sub(r"[^a-z0-9_]+", "", m.lower()))
     if "fusion-forms" in blob or "fusion_form" in blob:
         keys.add("ep:fusion_form_upload")
+    src = parts if endpoint_parts is None else endpoint_parts
+    path = _norm_endpoint(*src)
+    cat = re.sub(r"[^a-z0-9_]+", "", str(category or "").lower())
+    if path and cat:
+        keys.add(f"pc:{path}|{cat}")
     return keys
 
 
 def finding_dedup_keys_from_row(row: Any) -> set[str]:
+    endpoint = (
+        _field(row, "proof_url"),
+        _field(row, "node_key"),
+        _field(row, "poc_curl"),
+        _field(row, "description"),
+        _field(row, "evidence"),
+    )
     return finding_dedup_keys(
         _field(row, "title"),
         _field(row, "category"),
-        _field(row, "node_key"),
-        _field(row, "description"),
-        _field(row, "evidence"),
-        _field(row, "poc_curl"),
+        *endpoint,
         _field(row, "poc_python"),
+        category=_field(row, "category"),
+        endpoint_parts=endpoint,
     )
 
 
@@ -127,7 +163,7 @@ def pick_canonical_finding(members: list) -> Any:
 
 
 def collapse_duplicate_findings(rows: list) -> list:
-    """按 CVE/利用口并集聚类，每簇只留一条（已二次验证优先，其次最早入库）。"""
+    """按 CVE、利用口，或同一路径加同一类型并集聚类。每簇只留一条。"""
     if len(rows) <= 1:
         return list(rows)
     n = len(rows)

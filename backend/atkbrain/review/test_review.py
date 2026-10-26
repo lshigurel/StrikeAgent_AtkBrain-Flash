@@ -9,6 +9,11 @@ from unittest.mock import AsyncMock, patch
 
 
 class GateTests(unittest.TestCase):
+    def test_merged_duplicate_title_is_not_a_new_vuln(self) -> None:
+        from ..graph.model import is_merged_duplicate_title
+        self.assertTrue(is_merged_duplicate_title("（重复节点，已并入 vuln:crossdomain-wildcard）通配策略"))
+        self.assertFalse(is_merged_duplicate_title("crossdomain.xml 通配 domain=*"))
+
     def test_first_ingest_empty_ok(self) -> None:
         from ..graph.model import secondary_review_error
         self.assertIsNone(secondary_review_error(False, None, None))
@@ -36,6 +41,73 @@ class GateTests(unittest.TestCase):
         self.assertGreaterEqual(len(why), 40)
         self.assertIsNotNone(secondary_review_error(True, "high", "短"))
         self.assertIsNone(secondary_review_error(True, "medium", why))
+
+    def test_pending_stays_pending_when_rating_claims_it_left_status(self) -> None:
+        from ..graph.verify import merge_verification_status
+        why = "本条只做 NVD CVSS 3.1 基础分，本轮未再动手二次验证，故二次验证状态保持原状不改。"
+        status, sec = merge_verification_status("pending", False, "excluded", False, why)
+        self.assertEqual(status, "pending")
+        self.assertFalse(sec)
+
+    def test_failed_secondary_cannot_become_verified(self) -> None:
+        from ..graph.verify import merge_verification_status
+        why = "二次验证换了三条独立通道，再次看到同样的属性回显。"
+        status, sec = merge_verification_status("excluded", False, "verified", True, why)
+        self.assertEqual(status, "excluded")
+        self.assertFalse(sec)
+
+    def test_blocked_recheck_is_not_a_failure(self) -> None:
+        from ..graph.verify import is_real_secondary_failure, merge_verification_status
+        why = (
+            "本回合二次验证失败：run_cmd 与 http_request 全部回了"
+            "「本条意图已经写回，这次会话不再改打别的类型。」"
+            "因此没有看到原样落地，也没有新的独立观测。"
+        )
+        self.assertFalse(is_real_secondary_failure(why))
+        status, sec = merge_verification_status("pending", False, "excluded", False, why)
+        self.assertEqual(status, "pending")
+        self.assertFalse(sec)
+
+    def test_review_role_can_recheck_after_intent_closed(self) -> None:
+        import asyncio
+        from types import SimpleNamespace
+        from ..engine.intent_gate import gate_intent, tool_caller_role
+
+        ctx = SimpleNamespace(intent_closed=True)
+
+        async def go():
+            blocked = await gate_intent(ctx)
+            token = tool_caller_role.set("finding-review:f_x:secondary")
+            try:
+                opened = await gate_intent(ctx)
+            finally:
+                tool_caller_role.reset(token)
+            return blocked, opened
+
+        blocked, opened = asyncio.run(go())
+        self.assertIn("本条意图已经写回", blocked or "")
+        self.assertIsNone(opened)
+
+    def test_writing_a_finding_does_not_lock_the_hunt_session(self) -> None:
+        text = (Path(__file__).resolve().parents[1] / "agents" / "tools.py").read_text(encoding="utf-8")
+        self.assertNotIn("ctx.intent_closed = True", text)
+
+    def test_real_secondary_failure_sticks(self) -> None:
+        from ..graph.verify import merge_verification_status
+        why = "本回合二次验证失败：两条新通道都没有再看到同样的反射回显。"
+        status, sec = merge_verification_status("pending", False, "excluded", False, why)
+        self.assertEqual(status, "excluded")
+        self.assertFalse(sec)
+        status, sec = merge_verification_status(status, sec, "verified", True, "后来又说成功了")
+        self.assertEqual(status, "excluded")
+        self.assertFalse(sec)
+
+    def test_pending_becomes_verified_only_after_real_recheck(self) -> None:
+        from ..graph.verify import merge_verification_status
+        why = "换了两条新观测通道，再次看到同样的异常栈。"
+        status, sec = merge_verification_status("pending", False, None, True, why)
+        self.assertEqual(status, "verified")
+        self.assertTrue(sec)
 
     def test_rationale_without_intent_rejected(self) -> None:
         from ..graph.model import secondary_review_error
@@ -65,7 +137,9 @@ class NeedTests(unittest.TestCase):
         rated = {"secondary_verified": 0, "redteam_rating": "low"}
         self.assertEqual(finding_review_need(rated, want_secondary=True, want_rating=True), "secondary")
         excluded = {"secondary_verified": 0, "redteam_rating": None, "verification_status": "excluded"}
-        self.assertIsNone(finding_review_need(excluded, want_secondary=True, want_rating=True))
+        self.assertEqual(finding_review_need(excluded, want_secondary=True, want_rating=True), "rating")
+        excluded_rated = {"secondary_verified": 0, "redteam_rating": "low", "verification_status": "excluded"}
+        self.assertIsNone(finding_review_need(excluded_rated, want_secondary=True, want_rating=True))
 
     def test_attempt_cap_keeps_the_rest_of_the_queue(self) -> None:
         from ..review.jobs import note_review_attempt, review_attempt_open

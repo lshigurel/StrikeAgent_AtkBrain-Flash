@@ -17,7 +17,7 @@ import { ClusterDashboard } from "../features/cluster/ClusterDashboard";
 import { BenchmarkDashboard } from "../features/benchmark/BenchmarkDashboard";
 import { ReportExportControls } from "../features/report/ExportReport";
 import { colors, displayFindingSeverity } from "../theme";
-import { hardStopLine, listStatusOf } from "../projectStatus";
+import { formatRunClock, listStatusOf, liveHuntElapsed } from "../projectStatus";
 import { animate } from "animejs";
 import { countUp } from "../anim";
 import { useT } from "../i18n";
@@ -340,6 +340,28 @@ export function ProjectPage() {
     send({ type: "steer", content: msg });
   };
 
+  const [nowSec, setNowSec] = useState(() => Date.now() / 1000);
+
+  useEffect(() => {
+    if (!running) return;
+    const timer = setInterval(() => setNowSec(Date.now() / 1000), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
+
+  useEffect(() => {
+    if (!id || !running) return;
+    const timer = setInterval(() => {
+      api.getProject(id).then((p) => {
+        setProject((prev) => {
+          if (!prev || !p?.config?.hunt) return prev;
+          return { ...prev, config: { ...prev.config, hunt: p.config.hunt } };
+        });
+        setNowSec(Date.now() / 1000);
+      }).catch(() => {});
+    }, 10000);
+    return () => clearInterval(timer);
+  }, [id, running]);
+
   const onSelect = (n: GraphNode) => { setSelected(n); };
 
   if (!project) {
@@ -357,7 +379,7 @@ export function ProjectPage() {
   }
 
   const isFlag = project.config?.objective === "flag" || project.config?.track === "ctf";
-  const isSrc = project.config?.objective === "src" || project.config?.track === "src";
+  const isSrc = !isFlag;
   const visibleFindings = collectVulns(graph.findings, graph.nodes, { src: isSrc });
   const reviewState = latestFindingReview(events);
   const reviewLive = reviewState;
@@ -395,7 +417,6 @@ export function ProjectPage() {
     ? `${flagsCorrect}/${needed}${totalScore ? ` · ${totalScore}` : ""}`
     : "";
   const stopReason = !running ? project.config?.completion_reason : "";
-  const stopHint = hardStopLine(project);
 
   return (
     <div className="container" style={{ paddingTop: 24, paddingBottom: 40 }}>
@@ -450,22 +471,16 @@ export function ProjectPage() {
                   {t("project.highCrit")} <b style={{ color: colors.primary }}>{visibleHigh + visibleCritical}</b>
                 </span>
               ) : null}
-              <span
-                className="muted"
-                style={{ fontSize: 13 }}
-                title={t("project.rceProbTitle")}
-              >
-                {t("project.rceProb")} <b style={{ color: colors.primary }}>{graph.rce_path?.likelihood ?? 0}</b>
-              </span>
+              {(() => {
+                const elapsed = liveHuntElapsed(project, nowSec, running);
+                if (!running && elapsed <= 0) return null;
+                return (
+                  <span className="muted" style={{ fontSize: 13 }}>
+                    {t("project.ranFor", { time: formatRunClock(elapsed) })}
+                  </span>
+                );
+              })()}
             </div>
-            {stopHint ? (
-              <div className="muted" style={{ fontSize: 12, marginTop: 6, lineHeight: 1.55 }} title={stopHint.title}>
-                <div>{stopHint.text}</div>
-                {stopHint.conditions.map((c) => (
-                  <div key={c}>· {c}</div>
-                ))}
-              </div>
-            ) : null}
             {loadErr ? (
               <p className="error-text" style={{ marginTop: 10, maxWidth: 640 }}>{loadErr}</p>
             ) : null}

@@ -124,6 +124,10 @@ async def lifespan(app: FastAPI):
         from .engine.hunt_resume import start_saved_hunts
         from .engine.scheduler import manager as _run_manager
         resumed = await start_saved_hunts(_run_manager, db_running)
+        from .engine.hunt_resume import resume_queued
+        queued_n = await resume_queued(_run_manager)
+        if queued_n:
+            print(f"[startup] 按提交顺序恢复 {queued_n} 个排队项目")
         if resumed:
             print(f"[startup] 续跑重启前在跑的 {len(resumed)} 个项目（红队≤{_run_manager.redteam_sem.limit} / CTF≤{_run_manager.ctf_sem.limit}）")
         elif db_running:
@@ -143,6 +147,13 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(resume_pending_reviews())
     except Exception as e:
         print(f"[startup] 续做未完成复核失败：{e}")
+    try:
+        from .report.claude_export import resume_interrupted_exports
+        n_export = resume_interrupted_exports()
+        if n_export:
+            print(f"[startup] 续做 {n_export} 个被重启打断的交付报告")
+    except Exception as e:
+        print(f"[startup] 续做交付报告失败：{e}")
     try:
         from .proxy.pool import pool as _proxy_pool
         _proxy_pool.ensure_loop()

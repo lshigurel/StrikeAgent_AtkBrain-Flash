@@ -203,6 +203,12 @@ def placeholder_node_spec(key: str) -> tuple[str, str, str, list[str]]:
     return ntype, title, sev, ["placeholder"]
 
 
+def is_merged_duplicate_title(title: str | None) -> bool:
+    """同一证据被再写一节点时，标题会标明已并入。不能当成另一条未复核漏洞。"""
+    text = str(title or "")
+    return "重复节点" in text or "已并入" in text
+
+
 def is_placeholder_node(key: str, title: str | None, detail, tags: list | None) -> bool:
     tagset = {str(t).lower() for t in (tags or [])}
     if "placeholder" in tagset:
@@ -294,6 +300,7 @@ class IntentIn(BaseModel):
     evidence_fingerprint: str | None = None
     priority: float | None = None
     status: IntentStatus = "open"
+    depends_on: list[str] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True}
 
@@ -381,11 +388,14 @@ def finding_review_need(
     want_secondary: bool,
     want_rating: bool,
 ) -> str | None:
-    """本条还缺哪份复核：secondary / rating / both；两份都齐或对应开关关则 None。"""
+    """本条还缺哪份复核：secondary / rating / both；两份都齐或对应开关关则 None。
+    二次验证失败只剩评级；二次不再重开。"""
+    has_rating = bool(normalize_redteam_rating(_row_get(row, "redteam_rating")))
     if str(_row_get(row, "verification_status") or "").lower() == "excluded":
+        if bool(want_rating) and not has_rating:
+            return "rating"
         return None
     done_sec = bool(_row_get(row, "secondary_verified"))
-    has_rating = bool(normalize_redteam_rating(_row_get(row, "redteam_rating")))
     need_sec = bool(want_secondary) and not done_sec
     need_rate = bool(want_rating) and not has_rating
     if need_sec and need_rate:
@@ -409,9 +419,9 @@ def secondary_review_error(
     why = (rationale or "").strip()
     if str(status or "").lower() == "excluded":
         if secondary_verified:
-            return "这一条排除时 secondary_verified 必须为 false。排除只表示本条没被二次证明，不是否定这类漏洞。"
+            return "二次验证失败时 secondary_verified 必须为 false。失败只表示本条没被二次证明，不是否定这类漏洞。"
         if len(why) < 40:
-            return "排除须写清二次打了什么、没有看到什么危害，至少 40 字。"
+            return "二次验证失败须写清二次打了什么、没有看到什么危害，至少 40 字。"
         return None
     if not secondary_verified and not has_rating and not why:
         return None
@@ -461,10 +471,18 @@ def secondary_review_narrative(row: Any) -> str:
         lines.append("【二次验证】已做。须与红队评级同一轮：独立再打一遍（换观测通道 / 重放 PoC / 对照预期回显），不能只把首次观测再贴一遍。")
     else:
         lines.append("【二次验证】未做。已出现评级或理由但未完成二次验证，报告视为不完整。")
-    if rating:
+    score = _get("cvss")
+    if rating and score is not None:
+        try:
+            shown = f"{float(score):.1f}"
+        except (TypeError, ValueError):
+            shown = str(score)
+        band = "无" if rating == "info" else redteam_rating_label(rating)
+        lines.append(f"【NVD CVSS 3.1】基础分 **{shown}**，定性 **{band}**（`{rating}`）。展示严重度以 NVD 基础分为准。")
+    elif rating:
         lines.append(f"【红队评级】**{redteam_rating_label(rating)}**（`{rating}`）。展示严重度以该评级为准。")
     else:
-        lines.append("【红队评级】未给出。二次验证完成后必须同时评级。")
+        lines.append("【NVD CVSS 3.1】未评分。二次验证完成后按 NVD 的八项基础指标计算基础分。")
     if why:
         lines.append("【阐述】\n" + why)
     else:
@@ -487,7 +505,15 @@ def redteam_rating_block(row: Any) -> str:
 
     rating = normalize_redteam_rating(_get("redteam_rating") if _get("redteam_rating") is not None else None)
     why = str(_get("redteam_rating_rationale") or "").strip()
-    if rating:
+    score = _get("cvss")
+    if rating and score is not None:
+        try:
+            shown = f"{float(score):.1f}"
+        except (TypeError, ValueError):
+            shown = str(score)
+        band = "无" if rating == "info" else redteam_rating_label(rating)
+        head = f"NVD CVSS 3.1 基础分：**{shown}**（{band}）"
+    elif rating:
         head = f"级别：**{redteam_rating_label(rating)}**（`{rating}`）"
     else:
         head = "级别：未评级"

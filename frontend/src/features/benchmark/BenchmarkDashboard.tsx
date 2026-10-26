@@ -73,7 +73,8 @@ export function BenchmarkDashboard({ project }: { project: Project }) {
   const [pageSize, setPageSize] = useState(readPageSize);
 
   const bm = project.config?.benchmark || {};
-  const labSrc = (project.config as any)?.track === "src" || (project.config as any)?.objective === "src";
+  const rawTrack = String((project.config as any)?.track || (project.config as any)?.objective || "").toLowerCase();
+  const labSrc = rawTrack === "agent" || rawTrack === "src" || rawTrack === "redteam";
   const envClosed = Boolean((project.config as any)?.env_closed);
 
   const load = () => api.scoreboard(project.id).then(setBoard).catch(() => {});

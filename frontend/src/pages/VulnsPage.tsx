@@ -29,6 +29,8 @@ type LibFinding = Finding & {
   reviewing_rating?: boolean;
   review_secondary?: ReviewLive | null;
   review_rating?: ReviewLive | null;
+  disposition?: string | null;
+  retest_conclusion?: string | null;
 };
 
 function dur(sec: number): string {
@@ -99,6 +101,19 @@ export function VulnsPage() {
     return () => clearInterval(tmr);
   }, [q, project, category, track, page, pageSize]);
 
+  const [retestNote, setRetestNote] = useState("");
+  const retest = async (f: LibFinding) => {
+    setErr("");
+    setRetestNote("");
+    try {
+      const r = await api.retestFinding(f.project_id, f.id);
+      setRetestNote(r.label || r.conclusion);
+      load();
+    } catch (e: any) {
+      setErr(String(e?.message || e));
+    }
+  };
+
   const startReview = async (f: LibFinding, mode: "secondary" | "rating") => {
     const key = `${f.project_id}:${f.id}:${mode}`;
     setErr("");
@@ -127,6 +142,7 @@ export function VulnsPage() {
         <p>{t("vulns.subtitle")}</p>
       </header>
       {err ? <p className="error-text">{err}</p> : null}
+      {retestNote ? <p className="muted">{retestNote}</p> : null}
 
       <div className="project-head-stats" style={{ marginBottom: 18, justifyContent: "flex-start" }}>
         <Stat value={counts.total} label={t("vulns.kpiTotal")} />
@@ -236,11 +252,9 @@ export function VulnsPage() {
                       {(f.verification_status || "").toLowerCase() === "excluded" ? (
                         <SecondaryVerifyBadge excluded />
                       ) : (
-                        <>
-                          <SecondaryVerifyBadge done={!!f.secondary_verified} reviewing={sec?.status === "running" && !f.secondary_verified} />
-                          <RedteamRatingBadge rating={f.redteam_rating} reviewing={rate?.status === "running" && !f.redteam_rating} />
-                        </>
+                        <SecondaryVerifyBadge done={!!f.secondary_verified} reviewing={sec?.status === "running" && !f.secondary_verified} />
                       )}
+                      <RedteamRatingBadge rating={f.redteam_rating} score={f.cvss} reviewing={rate?.status === "running" && !f.redteam_rating} />
                     </div>
                   </td>
                   <td onClick={(e) => e.stopPropagation()}>
@@ -267,6 +281,10 @@ export function VulnsPage() {
                         </button>
                         {rate ? <span className="table-sub">{reviewLine(rate, t)}</span> : null}
                       </div>
+                      <button type="button" className="btn btn-secondary btn-sm" onClick={() => { void retest(f); }}>
+                        {t("vulns.retest")}
+                      </button>
+                      {f.disposition === "fixed" ? <span className="table-sub">已修复</span> : f.retest_conclusion === "still_reproducible" ? <span className="table-sub">仍可复现</span> : f.retest_conclusion === "inconclusive" ? <span className="table-sub">无法确认</span> : null}
                     </div>
                   </td>
                 </tr>

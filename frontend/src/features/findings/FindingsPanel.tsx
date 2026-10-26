@@ -65,9 +65,11 @@ export type FindingReviewState = {
 };
 
 function findingNeedsReview(f: Finding): boolean {
-  if ((f.verification_status || "").toLowerCase() === "excluded") return false;
   if (isNodeOnlyVuln(f)) return false;
-  return !f.secondary_verified || !String(f.redteam_rating || "").trim();
+  const failed = (f.verification_status || "").toLowerCase() === "excluded";
+  const needRate = !String(f.redteam_rating || "").trim();
+  if (failed) return needRate;
+  return !f.secondary_verified || needRate;
 }
 
 /** 事件里的名单会比写库晚。已经二次验证并有红队评级的，不再算进「正在」。 */
@@ -177,8 +179,8 @@ export function FindingsPanel({
       <div className="scroll-y" style={{ maxHeight: 520 }}>
         {visible.map((f) => {
           const excluded = (f.verification_status || "").toLowerCase() === "excluded";
-          const inQueue = !excluded && !isNodeOnlyVuln(f);
-          const needSec = inQueue && !f.secondary_verified;
+          const inQueue = !isNodeOnlyVuln(f);
+          const needSec = inQueue && !excluded && !f.secondary_verified;
           const needRate = inQueue && !String(f.redteam_rating || "").trim();
           const inReview = reviewingIds.has(String(f.id || ""));
           const secReviewing = needSec && inReview;
@@ -203,9 +205,7 @@ export function FindingsPanel({
                   {!excluded && (
                     <SecondaryVerifyBadge done={!!f.secondary_verified} reviewing={secReviewing} />
                   )}
-                  {!excluded && (
-                    <RedteamRatingBadge rating={f.redteam_rating} reviewing={rateReviewing} />
-                  )}
+                  <RedteamRatingBadge rating={f.redteam_rating} score={f.cvss} reviewing={rateReviewing} />
                   <b style={{ fontSize: 14 }}>{scrubCandidateRceLabel(f.title) || f.title}</b>
                 </div>
                 <span className="muted" style={{ fontSize: 12 }}>{f.category}</span>

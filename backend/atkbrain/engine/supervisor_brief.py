@@ -139,11 +139,13 @@ CHAIN_CLOSE_GUIDE = (
 )
 
 SRC_CYCLE_GUIDE = (
-    "SRC 挖洞循环（不是红队收口）：已验证洞不收工、不 GETSHELL、不以 socks/shell 横向。"
-    "至多一格把已证洞打到高危标准（impact_escalate），其余格换简报「建议测」且还没覆盖的类型，"
-    "每条独立 report_finding。禁止为凑数去打「暂缓」类型，禁止三格都消耗同一条利用链。"
-    "命令执行只写无害 txt canary 当高危证据。"
-    "已验证 SSRF 看见内网必须 report_pivot_capability（ssrf_*）扩网；禁止 socks/shell 横向与 GETSHELL 收工。"
+    "agent测试：发现更多漏洞，并把已经证实的危害做到 getshell。"
+    "路径是侦察→找攻击面→深入利用，三步可以叠在同一轮。"
+    "命令执行后 report_shell 收工。不以 socks/shell 去扫邻居，也不要等侦察全部结束才许打。"
+    "禁止为凑数去打「暂缓」类型，禁止三格都只消耗同一条，也禁止只扫不打。"
+    "命令执行只写无害 txt canary。"
+    "已验证 SSRF 看见内网必须 report_pivot_capability（ssrf_*）扩网；禁止 socks/shell 横向。"
+    "HTTP 活体必须有 web-exploit。活页面上的文件参数不要丢掉。"
 )
 
 SINGLE_CHANNEL_GUIDE = (

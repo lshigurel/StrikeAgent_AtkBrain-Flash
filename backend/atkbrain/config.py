@@ -66,13 +66,16 @@ class Settings(BaseSettings):
     claude_add_repo_dir: bool = False
 
     loop_max_turns: int = 0           # CTF 不限轮次（含评测）；停猎看墙钟 / 图空转
-    loop_max_turns_src: int = 0       # SRC：不限轮次；停猎看 12 小时墙钟或手动停止
-    loop_max_turns_redteam: int = 0   # 红队：默认不限轮次
-    src_runtime_hard_stop_sec: int = 12 * 60 * 60  # SRC：12 小时墙钟硬停
+    loop_max_turns_agent: int = 0     # agent 测试：不限轮次；停猎看墙钟或手动停止
+    loop_max_turns_src: int = 0       # 旧键，读入后并进 loop_max_turns_agent
+    loop_max_turns_redteam: int = 0   # 旧键，读入后并进 loop_max_turns_agent
+    agent_runtime_hard_stop_sec: int = 6 * 60 * 60  # agent 测试墙钟硬停
+    src_runtime_hard_stop_sec: int = 6 * 60 * 60  # 旧键，读入后并进 agent 钟
     loop_max_turns_benchmark: int = 0  # 已弃用：评测 CTF 不走轮次硬停
     loop_stall_limit: int = 10
-    loop_stall_limit_redteam: int = 10
-    loop_stall_limit_src: int = 10
+    loop_stall_limit_agent: int = 10
+    loop_stall_limit_redteam: int = 10  # 旧键，读入后并进 agent
+    loop_stall_limit_src: int = 10      # 旧键，读入后并进 agent
     loop_stall_limit_flag: int = 0     # CTF：不走「连续 N 轮无进展」暂停，改看 6 个空方案
     loop_spiral_empty_plans: int = 6  # 红队：连续这么多御主方案无高质量增长才升圈
     # 换路监督：连续 N 轮无高质量进展 → 软转向（method/chain）；再加重 → 硬空转可打断 hold。
@@ -126,7 +129,7 @@ class Settings(BaseSettings):
     runtime_hard_stop_pass2_sec: int = 120 * 60      # CTF 第 2 遍（回头啃未出/未齐 flag）
     runtime_hard_stop_pass3_sec: int = 180 * 60      # CTF 第 3 遍
     runtime_hard_stop_pass_step_sec: int = 60 * 60   # 第 4 遍起每次再加 60 分钟
-    redteam_runtime_hard_stop_sec: int = 12 * 60 * 60 # 红队：12 小时强制停止
+    redteam_runtime_hard_stop_sec: int = 6 * 60 * 60  # 旧键，读入后并进 agent 钟
     entry_unreachable_yield_sec: int = 0
 
     claude_model: str = "deepseek-flash"  # 历史名，与 pi_model 同义；控制台 pi-models.json 优先
@@ -136,7 +139,7 @@ class Settings(BaseSettings):
     pi_provider: str = os.environ.get("ATKBRAIN_PI_PROVIDER", "deepseek")
     pi_model: str = os.environ.get("ATKBRAIN_PI_MODEL", "deepseek-flash")
 
-    default_objective: str = "getshell"
+    default_objective: str = "agent"
     api_token: str = ""
     admin_user: str = "admin"
     admin_password: str = ""

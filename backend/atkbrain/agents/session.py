@@ -14,7 +14,7 @@ import time
 from ..config import settings
 from ..events import emit
 from ..exec.guard import Guard
-from ..objective import objective_allows_flag, objective_is_src
+from ..objective import objective_allows_flag
 from ..scope import Scope
 from .context import AgentContext
 from .mcp_http import register_project_mcp, unregister_project_mcp
@@ -185,8 +185,6 @@ class ProjectAgent:
                 if n in known and n not in seen:
                     out.append(n)
                     seen.add(n)
-        if objective_is_src(self.objective) and "src-hunt" in out and "web-exploit" in out:
-            out = [n for n in out if n != "web-exploit"]
         return cap_hunt_workers(out)
 
     async def connect(self, *, jitter: bool = False) -> None:
@@ -442,6 +440,11 @@ class ProjectAgent:
         flags = get_review_flags()
         if not flags["secondary_verify"] and not flags["redteam_rating"]:
             return 0
+        try:
+            from ..graph.store import promote_orphan_vuln_nodes
+            await promote_orphan_vuln_nodes(self.project_id)
+        except Exception:
+            pass
         try:
             pending = await findings_pending_review(self.project_id)
         except Exception:
@@ -790,13 +793,16 @@ class ProjectAgent:
             "你不要等复核、不要把二次验证当本回合主线。未复核洞是 pending_review，不能当已结案。"
         )
         extra_lead.append(
-            "本轮小结/收尾写完即停，不要再打工具；系统会结束本轮去问御主。"
-            "CTF / SRC / 红队同一条：工人不得把回合拖住。"
+            "报出漏洞后工人继续读页面和脚本。从者写完小结只结束你自己，不要因此结束工人。"
         )
-        close_note = extra_lead[-1]
         lead_instr = instruction + "\n\n" + "\n".join(extra_lead)
         named = [("lead", self._run_one("lead", self._lead_system(), lead_instr))]
-        worker_instr = instruction + "\n\n" + close_note
+        worker_note = (
+            "报出一条漏洞后继续。把入口页和同站内容页里的脚本、图片、下载地址读完，"
+            "再沿着这些地址验证。不要因为已经有发现就停。"
+            "一种调用形式在同站别的入口上改变了响应，还没在已确认入口上用过，就继续补，不要新造方法名或参数名。"
+        )
+        worker_instr = instruction + "\n\n" + worker_note
         for role in roles:
             named.append((role, self._run_one(role, self._role_system(role), worker_instr)))
 
@@ -810,7 +816,6 @@ class ProjectAgent:
             task_roles = {asyncio.create_task(coro): name for name, coro in named}
             by_role: dict[str, object] = {}
             pending: set[asyncio.Task] = set(task_roles)
-            lead_closed = False
             t0 = time.monotonic()
             try:
                 from ..project_status import uses_ctf_hunt_clocks
@@ -844,8 +849,8 @@ class ProjectAgent:
                             self.project_id, "log",
                             {"level": "info",
                              "message": (
-                                 f"本轮已满 {int(cap)}s，强制收口以让御主开口"
-                                 "（CTF / SRC / 红队同一规则）。"
+                                 f"本轮已满 {int(cap)}s，强制收口以让御主开口。"
+                                 "CTF / SRC / 红队同一条。"
                              )},
                             run_id=self.ctx.run_id,
                         )
@@ -857,7 +862,10 @@ class ProjectAgent:
                         pass
                     for t in list(pending):
                         t.cancel()
-                    leftover, pending = await asyncio.wait(pending, timeout=5)
+                    await self._abort_roles(
+                        {r for r in (task_roles.get(p) for p in pending) if r}
+                    )
+                    leftover, pending = await asyncio.wait(pending, timeout=WORKER_ABORT_GRACE_SEC)
                     _take(leftover)
                     break
                 slice_wait = 2.0
@@ -869,41 +877,6 @@ class ProjectAgent:
                 if not done:
                     continue
                 _take(done)
-                if (not lead_closed) and "lead" in by_role:
-                    lead_closed = True
-                    leftover_roles = [
-                        r for r in (task_roles.get(p) for p in pending) if r
-                    ]
-                    await self._abort_roles(set(leftover_roles))
-                    if leftover_roles:
-                        try:
-                            await emit(
-                                self.project_id, "log",
-                                {
-                                    "level": "info",
-                                    "message": (
-                                        "从者本轮已返回，中止仍在跑的工人（"
-                                        + "、".join(leftover_roles)
-                                        + "）以让御主开口。"
-                                    ),
-                                },
-                                run_id=self.ctx.run_id,
-                            )
-                        except Exception:
-                            pass
-                        more, pending = await asyncio.wait(
-                            pending, timeout=WORKER_ABORT_GRACE_SEC,
-                        )
-                        _take(more)
-                        if pending:
-                            await self._abort_roles(
-                                {r for r in (task_roles.get(p) for p in pending) if r}
-                            )
-                            for t in list(pending):
-                                t.cancel()
-                            extra, pending = await asyncio.wait(pending, timeout=5)
-                            _take(extra)
-                            pending = set()
             results = [by_role.get("lead")] + [by_role.get(r) for r in roles]
         finally:
             try:

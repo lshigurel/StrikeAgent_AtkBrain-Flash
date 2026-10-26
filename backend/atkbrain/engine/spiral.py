@@ -406,7 +406,7 @@ def format_coverage_brief(ledger: dict, *, objective: str | None = None) -> str:
                 bits.append(str(a.get("url") or a.get("path") or a.get("tactic") or "").strip())
             lines.append("已测路径：" + "、".join(x for x in bits if x))
         lines.append(
-            "低/中/高危/严重都要 report_finding 进漏洞页。禁止夺旗、禁止 Kali 直连与 socks/shell 横向。"
+            "低/中/高危/严重都要 report_finding 进漏洞页。禁止夺旗、禁止本机直连与 socks/shell 横向。"
             "已验证 SSRF 必须 report_pivot_capability。"
         )
         return "\n".join(lines)

@@ -66,6 +66,8 @@ EXPORT_SYSTEM = f"""你是 StrikeAgent_AtkBrain-Flash 的专职交付报告撰�
 
 _jobs: dict[str, dict] = {}
 _export_tasks: set[asyncio.Task] = set()
+_live_job_ids: set[str] = set()
+_RESTART_MARK = "后端重启"
 
 
 def content_disposition(disposition: str, filename: str) -> str:
@@ -137,21 +139,63 @@ def _job_public(job: dict) -> dict:
 
 
 
+def _spawn_export(job: dict) -> None:
+    jid = str(job.get("id") or "")
+    if not jid or jid in _live_job_ids:
+        return
+    _live_job_ids.add(jid)
+    task = asyncio.create_task(run_export_job(job))
+    _export_tasks.add(task)
+
+    def _done(t: asyncio.Task) -> None:
+        _export_tasks.discard(t)
+        _live_job_ids.discard(jid)
+
+    task.add_done_callback(_done)
+
+
+def _should_resume(job: dict) -> bool:
+    if job.get("status") == "running":
+        return True
+    err = f"{job.get('error') or ''} {job.get('message') or ''}"
+    return job.get("status") == "error" and _RESTART_MARK in err
+
+
+def resume_interrupted_exports() -> int:
+    """重启后把没写完的交付报告接着生成，不要求用户再点一次。"""
+    d = _job_dir()
+    if not d.is_dir():
+        return 0
+    n = 0
+    for path in d.glob("rpt_*.json"):
+        job = _load_job(path.stem)
+        if not job or not _should_resume(job):
+            continue
+        job["status"] = "running"
+        job["error"] = None
+        job["message"] = "后端已恢复，继续生成交付报告"
+        _jobs[str(job["id"])] = job
+        _persist_job(job)
+        _spawn_export(job)
+        n += 1
+    return n
+
+
 def _resolve_job(project_id: str, job_id: str) -> dict | None:
     job = _jobs.get(job_id)
-    restored = False
     if not job:
         job = _load_job(job_id)
-        restored = bool(job)
+        if job and job.get("project_id") == project_id and _should_resume(job):
+            job["status"] = "running"
+            job["error"] = None
+            job["message"] = "后端已恢复，继续生成交付报告"
+            _jobs[job_id] = job
+            _persist_job(job)
+            _spawn_export(job)
+        elif job:
+            _jobs[job_id] = job
     if not job or job.get("project_id") != project_id:
         return None
-    if restored:
-        if job.get("status") == "running":
-            job["status"] = "error"
-            job["error"] = "专职导出 Pi 已中断（后端重启），请重新导出"
-            job["message"] = job["error"]
-            _persist_job(job)
-        _jobs[job_id] = job
     return job
 
 
@@ -428,6 +472,13 @@ async def start_export_job(project_id: str, fmt: str, *, force: bool = True, lan
         raise ProjectReportMdGone(msg("md_gone", lang=loc))
     if fmt not in ("html", "pdf"):
         raise ValueError(msg("format_html_pdf", lang=loc))
+    for existing in _jobs.values():
+        if (
+            existing.get("project_id") == project_id
+            and (existing.get("format") or "html") == fmt
+            and existing.get("status") == "running"
+        ):
+            return _job_public(existing)
     job_id = new_id("rpt_")
     job = {
         "id": job_id,
@@ -447,9 +498,7 @@ async def start_export_job(project_id: str, fmt: str, *, force: bool = True, lan
     }
     _jobs[job_id] = job
     _persist_job(job)
-    task = asyncio.create_task(run_export_job(job))
-    _export_tasks.add(task)
-    task.add_done_callback(_export_tasks.discard)
+    _spawn_export(job)
     return _job_public(job)
 
 

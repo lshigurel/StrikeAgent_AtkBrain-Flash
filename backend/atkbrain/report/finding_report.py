@@ -87,38 +87,81 @@ def _verify_label(st: str | None, lang: str | None = None) -> str:
             "pending": "未验证 / 待复核",
             "flaky": "不稳定（曾复现）",
             "rejected": "已驳回",
+            "excluded": "二次验证失败",
         },
         "en": {
             "verified": "Verified",
             "pending": "Unverified / pending",
             "flaky": "Flaky (previously reproduced)",
             "rejected": "Rejected",
+            "excluded": "Secondary verification failed",
         },
     }
     return extra.get(loc, extra["zh"]).get(s) or lab("intel", loc) or s
 
 
+def exclusion_reason(finding: dict) -> str:
+    """二次验证失败时，复核写下的原因。漏洞页五段照写。"""
+    return (
+        str(finding.get("redteam_rating_rationale") or "").strip()
+        or str(finding.get("proof_detail") or "").strip()
+    )
+
+
+def _secondary_failed(finding: dict) -> bool:
+    return str(finding.get("verification_status") or "").lower() == "excluded"
+
+
+def _has_verified_body(finding: dict) -> bool:
+    """二次已经写下的结论。有这些就不能再显示「正在撰写」。"""
+    keys = (
+        "description", "evidence", "proof_detail", "poc_curl", "poc_python",
+        "redteam_rating_rationale",
+        "report_summary", "report_impact", "report_rating", "report_repro", "report_fix",
+    )
+    return any(str(finding.get(k) or "").strip() for k in keys)
+
+
 def _page_state(finding: dict) -> str:
-    """pending：二次还没完成，猎手写过的五段也不当正式页。
-    writing：二次已完成，五段还没落库。
-    ready：二次已完成且五段齐全。二次开关关掉时，有五段即 ready。
+    """pending：二次还没完成。
+    ready：二次已有结论。五段没落库时也展示验证写下的信息，不再盖成「正在撰写」。
+    writing：二次还没有可展示的正文。
     """
     from .pi_finding_page import has_pi_page
     from ..review.flags import get_review_flags
 
     need_sec = bool(get_review_flags().get("secondary_verify", True))
     sec = bool(finding.get("secondary_verified"))
-    if need_sec and not sec:
+    failed = _secondary_failed(finding)
+    if need_sec and not sec and not failed:
         return "pending"
-    if has_pi_page(finding):
+    if has_pi_page(finding) or ((sec or failed) and _has_verified_body(finding)):
         return "ready"
     return "writing"
 
 
-def prepare_finding_report(finding: dict, *, poc: dict | None = None, progress: str | None = None) -> dict:
-    """弹层只在二次完成且五段落库后展示正文。有评级或猎手草稿不算页已写好。
+def _apply_verified_facts(out: dict) -> None:
+    """五段还没写完时，详情直接用这次验证留下的正文。"""
+    def clean(value) -> str:
+        return str(value or "").strip()
 
-    progress=failed：上一轮撰写已经结束且没写出五段，不能再显示「正在撰写」。
+    if not clean(out.get("report_summary")):
+        out["report_summary"] = clean(out.get("description")) or clean(out.get("title"))
+    if not clean(out.get("report_impact")):
+        out["report_impact"] = clean(out.get("evidence")) or clean(out.get("proof_detail"))
+    if not clean(out.get("report_rating")):
+        out["report_rating"] = clean(out.get("redteam_rating_rationale"))
+        if not clean(out.get("report_rating")) and clean(out.get("redteam_rating")):
+            out["report_rating"] = f"NVD CVSS 3.1：{clean(out.get('redteam_rating'))}"
+    if not clean(out.get("report_repro")):
+        parts = [clean(out.get("proof_detail")), clean(out.get("poc_curl")), clean(out.get("poc_python"))]
+        out["report_repro"] = "\n\n".join(part for part in parts if part)
+
+
+def prepare_finding_report(finding: dict, *, poc: dict | None = None, progress: str | None = None) -> dict:
+    """二次有结论后立刻展示验证正文。五段没写完时用描述、证据、复核说明和 PoC，不再盖成「正在撰写」。
+
+    progress=failed：二次还没有任何正文、撰写也失败了，才显示撰写失败。
     """
     from .pi_finding_page import FAILED_COPY, PENDING_COPY, WRITING_COPY
 
@@ -127,8 +170,12 @@ def prepare_finding_report(finding: dict, *, poc: dict | None = None, progress: 
     state = _page_state(out)
     if state == "writing" and progress == "failed":
         state = "failed"
+    if state == "ready":
+        _apply_verified_facts(out)
     out["report_state"] = state
     out["report_pending"] = state != "ready"
+    if _secondary_failed(out):
+        out["exclusion_reason"] = exclusion_reason(out)
     if state != "ready":
         if state == "writing":
             note = WRITING_COPY
@@ -193,8 +240,10 @@ def render_finding_markdown(
     heads = {
         "zh": {
             "cat": "类别", "status": "验证状态", "id": "漏洞 ID",
-            "summary": "漏洞简介", "impact": "危害", "rating": "红队评级",
+            "summary": "漏洞简介", "impact": "危害", "rating": "NVD CVSS 3.1",
             "repro": "手动复现", "fix": "修复方式", "uncat": "未分类",
+            "why": "二次验证失败原因",
+            "why_empty": "二次验证失败原因没有写入。",
             "empty": "_未采集_",
             "no_poc": "_未采集可执行 PoC（无真实 poc_curl / poc_python）。_",
             "no_synth": "_系统拒绝为高危项合成假利用脚本。_",
@@ -203,6 +252,8 @@ def render_finding_markdown(
             "cat": "Category", "status": "Verification", "id": "Finding ID",
             "summary": "Summary", "impact": "Impact", "rating": "Red-team rating",
             "repro": "Manual reproduction", "fix": "Remediation", "uncat": "Uncategorized",
+            "why": "Why secondary verification failed",
+            "why_empty": "The secondary-verification failure reason was not written.",
             "empty": "_Not collected_",
             "no_poc": "_No executable PoC collected (no real poc_curl / poc_python)._",
             "no_synth": "_The system refused to synthesize an exploit script for a high/critical item._",
@@ -272,6 +323,9 @@ def render_finding_markdown(
         lines += _md_block(finding.get("remediation") or finding.get("report_fix"), heads["empty"])
     else:
         lines += _md_block(note, heads["empty"])
+    if _secondary_failed(finding):
+        lines += [f"{h2} {heads['why']}", ""]
+        lines += _md_block(exclusion_reason(finding), heads["why_empty"])
     return "\n".join(lines)
 
 

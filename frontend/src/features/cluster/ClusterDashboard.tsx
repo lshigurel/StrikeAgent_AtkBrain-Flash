@@ -7,7 +7,7 @@ import { BatchSelectionBar } from "../../components/BatchSelectionBar";
 import { ImportProgressBar, isImportPaused, isImportRunning, type ImportProgress } from "../../components/ImportProgressBar";
 import { PaginationBar, pageItems, readPageSize } from "../../components/PaginationBar";
 import { colors } from "../../theme";
-import { huntFailedReason, listStatusOf, hardStopLine } from "../../projectStatus";
+import { huntFailedReason, listStatusOf } from "../../projectStatus";
 import { ReportExportControls } from "../report/ExportReport";
 import { t, useT } from "../../i18n";
 
@@ -97,10 +97,8 @@ export function ClusterDashboard({
   const importPoll = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const assets: string[] = project.config?.assets || project.scope?.targets || [];
-  const clusterTrack = (String(project.config?.track || "").toLowerCase() === "src"
-    || String(project.config?.objective || "").toLowerCase() === "src")
-    ? "src"
-    : "redteam";
+  const rawTrack = String(project.config?.track || project.config?.objective || "").toLowerCase();
+  const clusterTrack = rawTrack === "ctf" || rawTrack === "flag" ? "ctf" : "agent";
 
   const load = () => api.subprojects(project.id).then(setSubs).catch(() => {});
   useEffect(() => {
@@ -258,7 +256,7 @@ export function ClusterDashboard({
     setImporting(true);
     setImportProgress({
       phase: "merge", done: 0, total: lineHint,
-      message: clusterTrack === "src" ? tr("projects.mergingZone") : tr("projects.mergingHost"),
+      message: clusterTrack === "agent" ? tr("projects.mergingZone") : tr("projects.mergingHost"),
     });
     try {
       const r = await api.addClusterAssets(project.id, [blob], true);
@@ -310,7 +308,6 @@ export function ClusterDashboard({
   const pageCount = Math.max(1, Math.ceil(visible.length / pageSize) || 1);
   const curPage = Math.min(page, pageCount);
   const paged = pageItems(visible, curPage, pageSize);
-  const stopHint = hardStopLine(project);
   const selectedCount = selectedIds.length;
   const allSelected = paged.length > 0 && paged.every((s) => selectedIds.includes(s.id));
   const toggleSelected = (id: string) => {
@@ -389,14 +386,6 @@ export function ClusterDashboard({
               {queuedCount > 0 ? tr("cluster.queued", { n: queuedCount }) : ""}
             </span>
           </div>
-          {stopHint ? (
-            <div className="muted" style={{ fontSize: 12, marginTop: 6, lineHeight: 1.55 }} title={stopHint.title}>
-              <div>{tr("cluster.childStop", { text: stopHint.text })}</div>
-              {stopHint.conditions.map((c) => (
-                <div key={c}>· {c}</div>
-              ))}
-            </div>
-          ) : null}
         </div>
         <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
           <ReportExportControls projectId={project.id} disabled={busy} />
@@ -435,7 +424,7 @@ export function ClusterDashboard({
         <div className="card-cream" style={{ marginBottom: 20, padding: 18 }}>
           <h3 style={{ marginBottom: 8, fontSize: 16 }}>{tr("cluster.addTitle")}</h3>
           <p className="muted" style={{ fontSize: 13, marginBottom: 10 }}>
-            {clusterTrack === "src" ? tr("cluster.addSrc") : tr("cluster.addRed")}
+            {clusterTrack === "agent" ? tr("cluster.addSrc") : tr("cluster.addRed")}
           </p>
           <div className="row" style={{ gap: 10, marginBottom: 10, flexWrap: "wrap", alignItems: "center" }}>
             <label className="btn btn-secondary btn-sm" style={{ cursor: busy || importing ? "not-allowed" : "pointer" }}>

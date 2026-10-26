@@ -99,6 +99,36 @@ def hunt_slot_kind(project: dict | None, objective: str | None = None) -> str:
     return "ctf" if objective_allows_flag(obj) else "redteam"
 
 
+async def _write_intent_steer(intent_id: str, message: str) -> None:
+    from ..db import db, now
+    await db.execute(
+        "UPDATE intents SET pending_steer=?, updated_at=? WHERE id=?",
+        ((message or "").strip()[:2000], now(), intent_id),
+    )
+
+
+async def acquire_slot_fifo(project_id: str, sem) -> None:
+    """按项目 queued_at 的提交顺序拿并发槽。暂停、删除、超时走句柄释放。"""
+    from ..db import db
+
+    while True:
+        async with _QUEUE_LINE:
+            row = await db.fetchone(
+                """SELECT id FROM projects
+                   WHERE status='queued' AND IFNULL(archived,0)=0
+                   ORDER BY COALESCE(queued_at, updated_at) ASC
+                   LIMIT 1"""
+            )
+            head = str((row or {}).get("id") or "")
+            if head in ("", project_id):
+                await sem.acquire()
+                return
+        await asyncio.sleep(0.25)
+
+
+_QUEUE_LINE = asyncio.Lock()
+
+
 class RunManager:
     """两道互不占槽的项目闸：
     - 红队 `redteam_sem`：红队与 SRC 同时跑的数量（默认 5）。
@@ -354,11 +384,25 @@ class RunManager:
             pass
         return True
 
-    def steer(self, project_id: str, message: str) -> bool:
-        """人工强制指令：入队并立刻打断本轮从者，下一轮必须改向。不与御主同级。"""
+    def steer(self, project_id: str, message: str, intent_id: str | None = None) -> bool:
+        """纠偏只写到那一条意图，下一工具调用前交给该工人。不打断项目里的其它意图。"""
         h = self.handles.get(project_id)
         if not h or not self.is_running(project_id):
             return False
+        iid = str(intent_id or "").strip()
+        if not iid and h.agent is not None:
+            bound = getattr(getattr(h.agent, "ctx", None), "bound_must_intents", None) or ()
+            ids = [str(x) for x in bound if str(x or "").strip()]
+            if len(ids) == 1:
+                iid = ids[0]
+        if iid:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                loop.create_task(_write_intent_steer(iid, message))
+            return True
         try:
             h.steering.put_nowait(message)
         except asyncio.QueueFull:

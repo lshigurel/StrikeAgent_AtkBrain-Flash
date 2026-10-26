@@ -93,6 +93,11 @@ export function ReportExportControls({
           const s = await api.reportExportStatus(projectId, j.id);
           misses = 0;
           setErr("");
+          const detail = `${s.error || ""} ${s.message || ""}`;
+          if (s.status === "error" && detail.includes("后端重启")) {
+            setJob({ ...s, status: "running", error: undefined, message: "后端已恢复，继续生成交付报告" });
+            return true;
+          }
           if (s.status === "done" || s.status === "error") {
             setJob(s);
             stopPoll();

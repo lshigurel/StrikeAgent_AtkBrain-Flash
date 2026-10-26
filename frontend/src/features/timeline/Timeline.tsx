@@ -65,7 +65,9 @@ export function Timeline({ events }: { events: RTEvent[] }) {
   // 长跑时 shown 被截到 MAX_SHOWN，length 不再变；用末条 id/ts 触发滚到底，避免时间线看起来“卡住”
   const tailKey = shown.length ? (shown[shown.length - 1].id ?? shown[shown.length - 1].ts) : 0;
   useEffect(() => {
-    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+    const pane = ref.current?.closest(".project-side-body");
+    const el = pane instanceof HTMLElement ? pane : ref.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [tailKey]);
 
   return (

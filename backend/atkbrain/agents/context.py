@@ -61,11 +61,13 @@ class AgentContext:
     cmd_inflight: int = 0
     task_subagents: list = field(default_factory=list)
     fanout_roles: list = field(default_factory=list)
+    keep_path_enum: bool = False
     _cookies: dict = field(default_factory=dict)
     _httpx_cli: object = None
     _ssrf_gw_hosts: set = field(default_factory=set)
     _ssrf_gw_ts: float = 0.0
     bound_must_intents: frozenset = field(default_factory=frozenset)
+    intent_closed: bool = False
     hop_auth_situation: bool = False
     hop_auth_host: str = ""
     hop_auth_intent_id: str = ""

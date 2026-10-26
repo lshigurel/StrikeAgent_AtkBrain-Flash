@@ -8,7 +8,7 @@ import socket
 from pathlib import Path
 
 from .db import db, new_id, now, _dumps, _loads
-from .objective import FLAG, REDTEAM, SRC, normalize_objective
+from .objective import AGENT, FLAG, normalize_objective, objective_allows_flag
 from .scope import Scope, forbidden_project_target_reason, is_loopback, is_private
 
 _IP_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
@@ -61,7 +61,7 @@ def _filter_scope_ips(host: str, ips: set[str], objective: str | None) -> tuple[
     """创建期 DNS 去漂移：域名解析结果剔除回环；红队额外剔除私网。显式 IP 目标原样保留。"""
     if _IP_RE.match(host):
         return set(ips), None
-    external = normalize_objective(objective) in (REDTEAM, SRC)
+    external = not objective_allows_flag(objective)
     kept: set[str] = set()
     for ip in ips:
         if is_loopback(ip):
@@ -147,6 +147,11 @@ async def create_single_project(
         (pid, name or host, "single", host, _dumps(ports), _dumps(scope.to_dict()),
          _dumps(cfg), "idle", parent_id, ts, ts),
     )
+    from .assets import seed_declared
+    await seed_declared(
+        pid, all_targets, list(ips),
+        vendor_name=(cfg.get("vendor") or host),
+    )
     return await get_project(pid)
 
 
@@ -176,7 +181,7 @@ def _format_cluster_rejection(rejected: list[tuple[str, str]]) -> str:
 
 async def create_cluster_project(name: str, assets: list[str], config: dict | None = None) -> dict:
     """集群项目（Phase 2 深化）：先建父项目并登记资产列表，存活快筛与子项目划分后续进行。"""
-    from .cluster import compact_assets_by_host, parse_asset_lines, preferred_host, _normalize_asset
+    from .cluster import compact_assets_by_host, parse_asset_lines, _normalize_asset
     cleaned: list[str] = []
     rejected: list[tuple[str, str]] = []
     for raw in parse_asset_lines(assets):
@@ -202,7 +207,7 @@ async def create_cluster_project(name: str, assets: list[str], config: dict | No
     seen: set[str] = set()
     for a in cleaned:
         info = _normalize_asset(a)
-        h = preferred_host(info.get("host") or "")
+        h = str(info.get("host") or "").strip().lower().rstrip(".")
         if h and h not in seen:
             seen.add(h)
             hosts.append(h)
@@ -219,6 +224,8 @@ async def create_cluster_project(name: str, assets: list[str], config: dict | No
         (pid, name, "cluster", None, None, _dumps(scope.to_dict()),
          _dumps(cfg), "idle", None, ts, ts),
     )
+    from .assets import seed_declared
+    await seed_declared(pid, hosts, vendor_name=(cfg.get("vendor") or name))
     return await get_project(pid)
 
 
@@ -230,13 +237,14 @@ async def create_benchmark_project(
     ts = now()
     scope = Scope(targets=[], mode="strict")
     incoming = dict(config or {})
-    is_src = normalize_objective(incoming.get("objective") or incoming.get("track")) == SRC
+    raw_obj = str(incoming.get("objective") or incoming.get("track") or "").strip()
+    is_agent = bool(raw_obj) and normalize_objective(raw_obj) == AGENT
     cfg = {
         **incoming,
-        "objective": "src" if is_src else "flag",
-        "track": "src" if is_src else incoming.get("track") or "ctf",
+        "objective": "agent" if is_agent else "flag",
+        "track": "agent" if is_agent else incoming.get("track") or "ctf",
         "benchmark": {"base_url": (base_url or "").rstrip("/"), "token": token or ""},
-        "autopilot": False if is_src else (
+        "autopilot": False if is_agent else (
             True if incoming.get("autopilot") is None else bool(incoming.get("autopilot"))
         ),
     }
@@ -250,23 +258,19 @@ async def create_benchmark_project(
 
 
 def _backfill_track(kind: str, cfg: dict) -> dict:
-    """给旧数据回填二级赛道 track（前端徽章用）。不落库，仅序列化时补齐。"""
-    t = str(cfg.get("track") or "").lower()
-    if t in ("redteam", "ctf", "src"):
-        return {**cfg, "track": t}
-    obj = normalize_objective(cfg.get("objective"))
-    if obj == SRC:
-        return {**cfg, "track": "src"}
-    if kind == "benchmark" or obj == FLAG:
-        return {**cfg, "track": "ctf"}
-    return {**cfg, "track": "redteam"}
+    """序列化时只露出 agent 或 ctf。旧的 redteam / src 都写成 agent。"""
+    explicit = str(cfg.get("track") or cfg.get("objective") or "").strip().lower()
+    if kind == "benchmark" and not explicit:
+        return {**cfg, "track": "ctf", "objective": "flag"}
+    if normalize_objective(explicit or cfg.get("objective")) == FLAG:
+        return {**cfg, "track": "ctf", "objective": "flag"}
+    return {**cfg, "track": "agent", "objective": "agent"}
 
 
 def project_track(kind: str | None, config: dict | None = None) -> str:
-    """项目赛道：redteam | ctf | src。缺字段时按 objective / kind 回填。"""
+    """项目赛道：agent | ctf。"""
     cfg = _backfill_track(kind or "single", dict(config or {}))
-    t = str(cfg.get("track") or "redteam").lower()
-    return t if t in ("redteam", "ctf", "src") else "redteam"
+    return "ctf" if str(cfg.get("track") or "") == "ctf" else "agent"
 
 
 def _serialize(row: dict) -> dict:
@@ -281,6 +285,10 @@ def _serialize(row: dict) -> dict:
         "config": cfg, "status": row["status"],
         "parent_id": row["parent_id"], "created_at": row["created_at"], "updated_at": row["updated_at"],
         "hard_stop": hunt_hard_stop_info(obj),
+        "category": row.get("category"),
+        "archived": int(row.get("archived") or 0),
+        "queued_at": row.get("queued_at"),
+        "vendor_id": row.get("vendor_id"),
     }
 
 
@@ -296,7 +304,19 @@ async def list_projects() -> list[dict]:
 
 
 async def update_status(pid: str, status: str) -> None:
-    await db.execute("UPDATE projects SET status=?, updated_at=? WHERE id=?", (status, now(), pid))
+    ts = now()
+    if status == "queued":
+        await db.execute(
+            """UPDATE projects SET status=?, updated_at=?,
+                   queued_at=COALESCE(queued_at, ?)
+               WHERE id=?""",
+            (status, ts, ts, pid),
+        )
+        return
+    await db.execute(
+        "UPDATE projects SET status=?, updated_at=?, queued_at=NULL WHERE id=?",
+        (status, ts, pid),
+    )
 
 
 def _row_config(row: dict) -> dict:
@@ -411,6 +431,12 @@ _PROJECT_DATA_TABLES = (
 
 
 async def _purge_project_rows(pid: str) -> None:
+    await db.execute(
+        "DELETE FROM finding_http WHERE finding_id IN (SELECT id FROM findings WHERE project_id=?)",
+        (pid,),
+    )
+    await db.execute("DELETE FROM http_exchanges WHERE project_id=?", (pid,))
+    await db.execute("DELETE FROM project_assets WHERE project_id=?", (pid,))
     for tbl in _PROJECT_DATA_TABLES:
         await db.execute(f"DELETE FROM {tbl} WHERE project_id=?", (pid,))
     await db.execute("DELETE FROM projects WHERE id=?", (pid,))

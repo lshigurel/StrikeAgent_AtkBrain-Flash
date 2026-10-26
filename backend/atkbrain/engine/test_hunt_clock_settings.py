@@ -16,8 +16,10 @@ class HuntClockSettingsTests(unittest.TestCase):
             "loop_max_turns_redteam": 99999,
             "graph_idle_empty_plans": 0,
         })
+        self.assertEqual(got["agent_runtime_hard_stop_sec"], MAX_WALL_SEC)
         self.assertEqual(got["redteam_runtime_hard_stop_sec"], MAX_WALL_SEC)
-        self.assertEqual(got["loop_max_turns_redteam"], 9999)
+        self.assertEqual(got["src_runtime_hard_stop_sec"], MAX_WALL_SEC)
+        self.assertEqual(got["loop_max_turns_agent"], 9999)
         self.assertEqual(got["graph_idle_empty_plans"], 1)
 
     def test_persist_and_apply(self):
@@ -34,21 +36,25 @@ class HuntClockSettingsTests(unittest.TestCase):
                 "src_runtime_hard_stop_sec": 3600,
                 "loop_max_turns_src": 3,
             })
+            self.assertEqual(out["agent_runtime_hard_stop_sec"], 3600)
             self.assertEqual(out["src_runtime_hard_stop_sec"], 3600)
-            self.assertEqual(out["loop_max_turns_src"], 3)
+            self.assertEqual(out["redteam_runtime_hard_stop_sec"], 3600)
+            self.assertEqual(out["loop_max_turns_agent"], 3)
             data = json.loads(p.read_text(encoding="utf-8"))
-            self.assertEqual(data["loop_max_turns_src"], 3)
+            self.assertEqual(data["loop_max_turns_agent"], 3)
 
     def test_redteam_max_turns(self):
         from atkbrain.project_status import hunt_max_turns
         from atkbrain.config import settings
-        old = settings.loop_max_turns_redteam
-        settings.loop_max_turns_redteam = 7
+        old = settings.loop_max_turns_agent
+        settings.loop_max_turns_agent = 7
         try:
             self.assertEqual(hunt_max_turns("redteam"), 7)
-            self.assertEqual(hunt_max_turns("src"), settings.loop_max_turns_src)
+            self.assertEqual(hunt_max_turns("src"), 7)
+            self.assertEqual(hunt_max_turns("agent"), 7)
+            self.assertEqual(hunt_max_turns("flag"), settings.loop_max_turns)
         finally:
-            settings.loop_max_turns_redteam = old
+            settings.loop_max_turns_agent = old
 
 
 if __name__ == "__main__":

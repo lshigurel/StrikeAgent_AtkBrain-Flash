@@ -54,7 +54,18 @@ _RESERVED = frozenset({
 
 
 def track_of(objective: str | None) -> str:
-    return normalize_objective(objective)
+    """Agent 体系的三赛道标签 redteam|flag|src。
+
+    与项目 track(agent|ctf) 是两套概念：项目 track 由 projects._backfill_track 归一，
+    这里描述「这个 agent 服务哪类目标」，所以不能用 objective.normalize_objective
+    （上游已把它折成 agent|flag 二值，会把 redteam/src 全部塌成 agent）。
+    """
+    raw = str(objective or "").strip().lower()
+    if raw in ("flag", "ctf", "getflag"):
+        return "flag"
+    if raw in ("src", "src-hunt"):
+        return "src"
+    return "redteam"
 
 
 def is_core(role: str, track: str | None = None) -> bool:

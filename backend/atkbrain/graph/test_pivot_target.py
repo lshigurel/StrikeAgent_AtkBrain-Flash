@@ -15,8 +15,11 @@ from ..scope_pivot import ssrf_gateway_hosts
 
 class PromoteRuleTests(unittest.TestCase):
     def test_rfc1918_promotes(self) -> None:
-        self.assertTrue(_should_promote_intranet_host("10.0.1.8", ["pivot"], "1.2.3.4"))
-        self.assertTrue(_should_promote_intranet_host("10.12.0.9", ["internal"], "example.com"))
+        self.assertFalse(_should_promote_intranet_host("10.0.1.8", ["pivot"], "1.2.3.4"))
+        self.assertFalse(_should_promote_intranet_host("10.12.0.9", ["internal"], "example.com"))
+        self.assertTrue(_should_promote_intranet_host("10.0.1.8", ["ssrf", "pivot"], "1.2.3.4"))
+        self.assertTrue(_should_promote_intranet_host("10.12.0.9", ["via-live"], "example.com"))
+        self.assertTrue(_should_promote_intranet_host("10.1.1.1", ["getshell"], "example.com"))
 
     def test_entry_and_vhost_and_clue_skip(self) -> None:
         self.assertFalse(_should_promote_intranet_host("10.0.1.8", ["entry"], "1.2.3.4"))

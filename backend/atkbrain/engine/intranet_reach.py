@@ -30,10 +30,10 @@ NO_PRECONDITION_MSG = (
 MUST_VIA_CAPABILITY_MSG = (
     "该主机是经跳板看见的本题内网，攻击机网卡到不了。"
     "把目标放进已验证 SSRF 参数，或在立足点 shell 上访问，"
-    "或经入口上的转发端口；禁止 Kali 直连。"
+    "或经入口上的转发端口；禁止本机直连。"
 )
 NOT_SEEN_VIA_CAPABILITY_MSG = (
-    "该地址只是内网线索，尚未经已验证跳板观测到，不能 Kali 直连操作。"
+    "该地址只是内网线索，尚未经已验证跳板观测到，不能从本机直连操作。"
 )
 
 _IPV4_RE = re.compile(r"\b((?:\d{1,3}\.){3}\d{1,3})\b")

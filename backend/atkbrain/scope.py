@@ -287,10 +287,7 @@ def unauthorized_public_host(
     *,
     primary: str = "",
 ) -> str | None:
-    """公网 FQDN 不在作业对象注册域内：视为打歪。IP 交给私网闸。
-
-    同注册域子域放行；其它注册域拦截。INFRA / OOB / 文档域名除外。
-    """
+    """只认本项目已经授权的主机。同注册域的其它名字不放行。IP 交给私网闸。"""
     h = _norm_host(host)
     if not h or _IP_RE.match(h):
         return None
@@ -302,12 +299,11 @@ def unauthorized_public_host(
                 return None
         except Exception:
             pass
-    apexes = authorized_registrable_domains(scope, primary)
-    h_reg = registrable_domain(h)
-    if h_reg and h_reg in apexes:
-        return None
-    shown = "、".join(apexes) or _norm_host(str(primary or "").split(":")[0]) or "当前作业对象"
-    return f"{h} 不是作业对象（授权注册域 {shown}，不要改打同品牌其它域）"
+    names: list[str] = []
+    if scope is not None:
+        names = sorted(scope.identity_hosts())
+    shown = "、".join(names[:8]) or _norm_host(str(primary or "").split(":")[0]) or "当前作业对象"
+    return f"{h} 不在本项目已授权主机内（{shown}）"
 
 
 def authorized_registrable_domains(scope: "Scope | None", primary: str = "") -> list[str]:
@@ -1051,12 +1047,22 @@ class Scope:
     mode: str = "strict"
 
     def identity_hosts(self) -> set[str]:
-        out: set[str] = set()
-        for t in self.targets:
-            out |= www_aliases(t)
-        for ip in self.ips:
-            out.add(_norm_host(ip))
+        out = {_norm_host(t) for t in self.targets}
+        out |= {_norm_host(ip) for ip in self.ips}
         return {h for h in out if h}
+
+    def _ip_in_cidrs(self, host: str) -> bool:
+        try:
+            addr = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        for raw in self.cidrs or []:
+            try:
+                if addr in ipaddress.ip_network(raw, strict=False):
+                    return True
+            except ValueError:
+                continue
+        return False
 
     def host_in_scope(
         self,
@@ -1074,6 +1080,8 @@ class Scope:
         if h in INFRA_ALLOWLIST:
             return True
         if self._explicit_member(h):
+            return True
+        if self._ip_in_cidrs(h):
             return True
         if self.allow_subdomains:
             for t in self.targets:
